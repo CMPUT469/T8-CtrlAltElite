@@ -80,5 +80,3 @@ If models saturate early, we’ll explore:
 - Final report + presentation/demo
 
 ---
-
-## Repo structure (suggested)
