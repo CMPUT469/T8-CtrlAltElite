@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Mac OS
+.DS_Store
+
+# Testing & Results
+*.json
+!pyproject.toml
+threshold_results_*.json
+bfcl_results_*.json
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Project specific
+gorilla_mcp_tools.json
+gorilla_test_cases.json
