@@ -18,7 +18,8 @@ from datasets import load_dataset
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from openai import OpenAI
-
+from huggingface_hub import hf_hub_download
+import json
 # Add mcp-client to path
 sys.path.append(str(Path(__file__).parent / "mcp-client"))
 
@@ -27,30 +28,65 @@ BFCL_DATASET = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 
 def download_bfcl_dataset(category: str = "simple"):
     """
-    Download BFCL dataset from HuggingFace.
+    Load BFCL dataset - tries local math_test_cases.jsonl first, then HuggingFace.
     
-    Categories:
+    Categories (for HF):
     - 'simple' - Single function calls with basic parameters
     - 'multiple' - Multiple function calls
     - 'parallel' - Parallel function execution
     - 'composite' - Multi-step reasoning chains
     """
-    print(f"Downloading BFCL dataset (category: {category})...")
+    
+    # Try local math test cases first
+    local_test_file = Path("math_test_cases.jsonl")
+    if local_test_file.exists():
+        print(f"Loading local math test cases from {local_test_file}...")
+        try:
+            with open(local_test_file, 'r') as f:
+                data = [json.loads(line.strip()) for line in f if line.strip()]
+            print(f"Loaded {len(data)} math test cases from local file")
+            return data, "math"
+        except Exception as e:
+            print(f"Error loading local test file: {e}")
+            print("Falling back to HuggingFace dataset...")
+    
+    # Fall back to HuggingFace BFCL dataset
+    print(f"Downloading BFCL dataset from HuggingFace...")
     
     try:
-        # BFCL dataset structure on HuggingFace
-        dataset = load_dataset(BFCL_DATASET, category)
-        print(f"Downloaded {len(dataset['test'])} test cases")
-        return dataset
+        # Download the specific JSON file for the category
+        filename = f"BFCL_v3_live_{category}.json"
+        print(f"Downloading file: {filename}")
+        
+        file_path = hf_hub_download(
+            repo_id=BFCL_DATASET,
+            filename=filename,
+            repo_type="dataset"
+        )
+        
+        # Load JSON manually
+        with open(file_path, 'r') as f:
+            data = []
+            for line_num, line in enumerate(f, 1):
+                try:
+                    data.append(json.loads(line.strip()))
+                except json.JSONDecodeError as e:
+                    # Skip malformed lines
+                    print(f"Warning: Skipping malformed line {line_num}: {e}")
+                    continue
+        
+        print(f"Downloaded {len(data)} test cases")
+        return data, category
+        
     except Exception as e:
         print(f"Error downloading BFCL dataset: {e}")
-        print(f"Install datasets library: pip install datasets")
-        return None
+        print(f"Tip: Generate local math tests with: python generate_math_tests.py")
+        return None, None
 
 
-def filter_math_tests(dataset) -> List[Dict]:
+def filter_math_tests(data, category: str = None) -> List[Dict]:
     """
-    Filter test cases that use math tools (our 14 BFCL tools).
+    Process BFCL test cases to extract math tool tests.
     """
     math_tools = {
         "add", "subtract", "multiply", "divide", "power", 
@@ -58,24 +94,78 @@ def filter_math_tests(dataset) -> List[Dict]:
         "sum_values", "mean", "min_value", "max_value", "standard_deviation"
     }
     
-    filtered_tests = []
+    processed_tests = []
     
-    for example in dataset['test']:
-        # BFCL format: check if function name is in our math tools
-        function_name = example.get('function', '')
-        
-        if function_name in math_tools:
-            filtered_tests.append({
-                'id': example.get('id', ''),
-                'query': example.get('question', ''),
-                'expected_function': function_name,
-                'expected_params': example.get('parameters', {}),
-                'expected_result': example.get('expected_output', None),
-                'category': example.get('category', 'simple')
-            })
+    if not isinstance(data, list):
+        print("Warning: Expected data to be a list")
+        return []
     
-    print(f"Filtered {len(filtered_tests)} math tool test cases")
-    return filtered_tests
+    print(f"\nProcessing {len(data)} test cases...")
+    
+    for i, example in enumerate(data):
+        try:
+            if not isinstance(example, dict):
+                continue
+            
+            # BFCL format: function is a LIST of function definitions
+            func_list = example.get('function', [])
+            if not func_list or not isinstance(func_list, list):
+                # Try direct function name
+                function_name = example.get('function', '')
+                if isinstance(function_name, str) and function_name in math_tools:
+                    # Simple format
+                    query = example.get('question', '')
+                    if isinstance(query, list) and len(query) > 0:
+                        if isinstance(query[0], list) and len(query[0]) > 0:
+                            query = query[0][0].get('content', '') if isinstance(query[0][0], dict) else str(query)
+                    
+                    processed_tests.append({
+                        'id': example.get('id', f'test_{i}'),
+                        'query': query,
+                        'expected_function': function_name,
+                        'expected_params': example.get('expected_call', {}).get('arguments', {}),
+                        'category': category or 'math'
+                    })
+                continue
+            
+            # Extract the first function definition
+            func_def = func_list[0] if func_list else {}
+            function_name = func_def.get('name', '')
+            
+            if function_name not in math_tools:
+                continue
+            
+            # Get the question (nested list in BFCL format)
+            question_list = example.get('question', [[]])
+            query = ''
+            if question_list and isinstance(question_list, list):
+                messages = question_list[0] if question_list else []
+                if messages and isinstance(messages, list):
+                    for msg in messages:
+                        if isinstance(msg, dict) and msg.get('role') == 'user':
+                            query = msg.get('content', '')
+                            break
+            
+            if query and function_name:
+                # Extract expected parameters from expected_call if available
+                expected_params = {}
+                if 'expected_call' in example:
+                    expected_params = example['expected_call'].get('arguments', {})
+                
+                processed_tests.append({
+                    'id': example.get('id', f'test_{i}'),
+                    'query': query,
+                    'expected_function': function_name,
+                    'expected_params': expected_params,
+                    'category': category or 'math'
+                })
+                
+        except Exception as e:
+            print(f"Warning: Error processing example {i}: {e}")
+            continue
+    
+    print(f"Processed {len(processed_tests)} math tool test cases\n")
+    return processed_tests
 
 
 async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int] = None):
@@ -377,7 +467,7 @@ def print_report(metrics: Dict, model: str):
     print()
 
 
-def save_results(results: Dict, metrics: Dict, model: str):
+def save_results(results: Dict, metrics: Dict, model: str, output_path: Optional[str] = None):
     """Save evaluation results to JSON file."""
     output = {
         'model': model,
@@ -386,7 +476,12 @@ def save_results(results: Dict, metrics: Dict, model: str):
         'raw_results': results
     }
     
-    filename = f"bfcl_results_{model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    if output_path:
+        filename = output_path
+        # Create directory if needed
+        Path(filename).parent.mkdir(parents=True, exist_ok=True)
+    else:
+        filename = f"bfcl_results_{model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     
     with open(filename, 'w') as f:
         json.dump(output, f, indent=2)
@@ -404,6 +499,7 @@ async def main():
                        help="BFCL test category")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of tests")
     parser.add_argument("--download-only", action="store_true", help="Only download dataset, don't evaluate")
+    parser.add_argument("--output", type=str, default=None, help="Output file path for results")
     
     args = parser.parse_args()
     
@@ -416,12 +512,18 @@ async def main():
     print()
     
     # Download BFCL dataset
-    dataset = download_bfcl_dataset(args.category)
+    dataset, category = download_bfcl_dataset(args.category)
     if not dataset:
         return
     
+    print(f"\nDataset type: {type(dataset)}")
+    print(f"Dataset length: {len(dataset) if dataset else 0}")
+    if dataset and len(dataset) > 0:
+        print(f"First item type: {type(dataset[0])}")
+        print(f"First item: {dataset[0]}")
+    
     # Filter to math tools
-    test_cases = filter_math_tests(dataset)
+    test_cases = filter_math_tests(dataset, category)
     
     if args.download_only:
         print(f"\nDataset downloaded and filtered")
@@ -438,7 +540,7 @@ async def main():
     print_report(metrics, args.model)
     
     # Save results
-    save_results(results, metrics, args.model)
+    save_results(results, metrics, args.model, args.output)
     
     print(f"\nEvaluation complete!")
     print(f"\nNext steps:")
