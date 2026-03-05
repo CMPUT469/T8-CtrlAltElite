@@ -1,11 +1,10 @@
 """
-BFCL (Berkeley Function Calling Leaderboard) Evaluation
+BFCL Evaluation Framework
 
-Downloads BFCL dataset from HuggingFace and calculates F1/TSR metrics
-for qwen2.5 using the 14 BFCL math tools.
+Evaluates LLM function calling accuracy using Berkeley Function Calling Leaderboard.
+Measures F1 score, precision, recall, and tool selection rate across multiple test categories.
 
 Dataset: gorilla-llm/Berkeley-Function-Calling-Leaderboard
-Contains: 16k+ real-world tool-use instructions with multi-step reasoning
 """
 
 import asyncio
@@ -168,7 +167,7 @@ def filter_math_tests(data, category: str = None) -> List[Dict]:
     return processed_tests
 
 
-async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int] = None):
+async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int] = None, num_distractors: Optional[int] = None):
     """
     Run BFCL test cases against the model and calculate F1/TSR.
     
@@ -176,6 +175,7 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
         model: Model name (e.g., 'qwen2.5')
         test_cases: List of BFCL test cases
         limit: Optional limit on number of tests to run
+        num_distractors: Number of distractor tools (0=oracle, None=all tools)
     """
     print(f"\n{'='*60}")
     print(f"Evaluating {model} on BFCL Math Tools")
@@ -216,12 +216,21 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
             
             # Get available tools
             mcp_tools = await session.list_tools()
-            print(f"Connected to MCP server with {len(mcp_tools.tools)} tools\n")
+            all_tools = mcp_tools.tools
+            print(f"Connected to MCP server with {len(all_tools)} tools")
+            
+            if num_distractors is not None:
+                if num_distractors == 0:
+                    print("Running in ORACLE MODE (0 distractors)\n")
+                else:
+                    print(f"Running with {num_distractors} DISTRACTORS ({num_distractors + 1} tools per test)\n")
+            else:
+                print(f"Running in STANDARD MODE (all {len(all_tools)} tools available)\n")
             
             # Convert MCP tools to OpenAI format
-            openai_tools = []
-            for tool in mcp_tools.tools:
-                openai_tools.append({
+            all_openai_tools = []
+            for tool in all_tools:
+                all_openai_tools.append({
                     "type": "function",
                     "function": {
                         "name": tool.name,
@@ -245,10 +254,30 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
                     'correct_function': False,
                     'correct_params': False,
                     'correct_result': False,
-                    'error': None
+                    'error': None,
+                    'incorrect_output': None  # Captures actual model output when there's an error
                 }
                 
                 try:
+                    # Sample tools based on num_distractors
+                    if num_distractors is not None:
+                        # Get the relevant tool
+                        relevant_tool = [t for t in all_openai_tools if t["function"]["name"] == test['expected_function']]
+                        
+                        if num_distractors == 0:
+                            # Oracle mode: only relevant tool
+                            openai_tools = relevant_tool
+                        else:
+                            # Sample N distractors
+                            import random
+                            distractors = [t for t in all_openai_tools if t["function"]["name"] != test['expected_function']]
+                            sampled_distractors = random.sample(distractors, min(num_distractors, len(distractors)))
+                            openai_tools = relevant_tool + sampled_distractors
+                            random.shuffle(openai_tools)  # Randomize order
+                    else:
+                        # Use all tools
+                        openai_tools = all_openai_tools
+                    
                     # Call Ollama model with tools
                     messages = [
                         {"role": "system", "content": "You are a helpful assistant. Use the provided tools when needed."},
@@ -305,12 +334,25 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
                                     test_result['error'] = f"Tool execution failed: {str(e)}"
                             else:
                                 results['wrong_params'] += 1
+                                test_result['incorrect_output'] = {
+                                    'called_function': actual_function,
+                                    'actual_params': actual_params,
+                                    'expected_params': test['expected_params'],
+                                    'param_mismatch': True
+                                }
                         else:
                             results['wrong_tool'] += 1
+                            test_result['incorrect_output'] = {
+                                'called_function': actual_function,
+                                'called_params': actual_params,
+                                'expected_function': test['expected_function']
+                            }
                     else:
                         # No tool call made
                         results['no_tool_call'] += 1
                         test_result['error'] = "Model did not make a tool call"
+                        # Capture the actual text content the model generated
+                        test_result['incorrect_output'] = message.content if hasattr(message, 'content') else None
                         
                 except Exception as e:
                     test_result['error'] = f"Evaluation error: {str(e)}"
@@ -495,11 +537,15 @@ async def main():
     
     parser = argparse.ArgumentParser(description="BFCL Evaluation for MCP Models")
     parser.add_argument("--model", default="qwen2.5", help="Model to evaluate")
-    parser.add_argument("--category", default="simple", choices=["simple", "multiple", "parallel", "composite"],
-                       help="BFCL test category")
+    parser.add_argument("--category", default="simple", 
+                       choices=["simple", "multiple", "parallel", "composite", "all"],
+                       help="BFCL test category (use 'all' to load all categories)")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of tests")
     parser.add_argument("--download-only", action="store_true", help="Only download dataset, don't evaluate")
     parser.add_argument("--output", type=str, default=None, help="Output file path for results")
+    parser.add_argument("--synthetic", type=str, default=None, help="Use synthetic test file instead of BFCL")
+    parser.add_argument("--oracle-mode", action="store_true", help="Oracle mode: only provide the relevant tool (no distractors)")
+    parser.add_argument("--num-distractors", type=int, default=None, help="Number of distractor tools to include (0 = oracle mode)")
     
     args = parser.parse_args()
     
@@ -508,22 +554,41 @@ async def main():
     print("="*60)
     print(f"Model: {args.model}")
     print(f"Category: {args.category}")
-    print(f"Dataset: {BFCL_DATASET}")
     print()
     
-    # Download BFCL dataset
-    dataset, category = download_bfcl_dataset(args.category)
-    if not dataset:
-        return
-    
-    print(f"\nDataset type: {type(dataset)}")
-    print(f"Dataset length: {len(dataset) if dataset else 0}")
-    if dataset and len(dataset) > 0:
-        print(f"First item type: {type(dataset[0])}")
-        print(f"First item: {dataset[0]}")
-    
-    # Filter to math tools
-    test_cases = filter_math_tests(dataset, category)
+    # Use synthetic tests if provided
+    if args.synthetic:
+        print(f"Loading synthetic tests from: {args.synthetic}")
+        with open(args.synthetic, 'r') as f:
+            test_cases = json.load(f)
+        print(f"Loaded {len(test_cases)} synthetic test cases")
+    else:
+        print(f"Dataset: {BFCL_DATASET}")
+        
+        # Load multiple categories if 'all' is specified
+        if args.category == "all":
+            categories = ["simple", "multiple", "parallel"]
+            all_test_cases = []
+            for cat in categories:
+                print(f"\nLoading category: {cat}")
+                dataset, _ = download_bfcl_dataset(cat)
+                if dataset:
+                    cat_tests = filter_math_tests(dataset, cat)
+                    all_test_cases.extend(cat_tests)
+                    print(f"  Found {len(cat_tests)} math tests in {cat}")
+            test_cases = all_test_cases
+            print(f"\nTotal math tests from all categories: {len(test_cases)}")
+        else:
+            # Download single BFCL category
+            dataset, category = download_bfcl_dataset(args.category)
+            if not dataset:
+                return
+            
+            print(f"\nDataset type: {type(dataset)}")
+            print(f"Dataset length: {len(dataset) if dataset else 0}")
+            
+            # Filter to math tools
+            test_cases = filter_math_tests(dataset, category)
     
     if args.download_only:
         print(f"\nDataset downloaded and filtered")
@@ -531,7 +596,8 @@ async def main():
         return
     
     # Run evaluation
-    results = await evaluate_model(args.model, test_cases, args.limit)
+    num_distractors = args.num_distractors if args.num_distractors is not None else (0 if args.oracle_mode else None)
+    results = await evaluate_model(args.model, test_cases, args.limit, num_distractors=num_distractors)
     
     # Calculate metrics
     metrics = calculate_metrics(results)
