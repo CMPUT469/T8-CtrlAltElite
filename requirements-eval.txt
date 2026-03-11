@@ -2,3 +2,5 @@
 datasets>=2.14.0
 huggingface-hub>=0.19.0
 openai>=1.0.0  # For Ollama OpenAI-compatible API
+supabase>=2.0.0
+python-dotenv>=1.0.0

@@ -607,7 +607,11 @@ async def main():
     
     # Save results
     save_results(results, metrics, args.model, args.output)
-    
+
+    # Log to cloud database (skipped silently if .env not configured)
+    from db_logger import log_run
+    log_run(results, metrics, model=args.model, suite="bfcl", num_distractors=num_distractors)
+
     print(f"\nEvaluation complete!")
     print(f"\nNext steps:")
     print(f"1. Review results in bfcl_results_{args.model}_*.json")
