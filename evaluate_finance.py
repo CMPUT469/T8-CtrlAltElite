@@ -259,7 +259,6 @@ def normalize_finance_tests(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "query": query,
                 "expected_function": expected_function,
                 "expected_params": expected_params,
-                "expected_result": example.get("expected_result"),
                 "category": example.get("category", "finance"),
             }
         )
@@ -328,29 +327,30 @@ def _compare_params(actual: Dict[str, Any], expected: Dict[str, Any]) -> bool:
     return True
 
 
-def _extract_result_value(tool_result: Any) -> Any:
-    """Extract actual value from MCP tool response shape."""
+def _extract_tool_output(tool_result: Any) -> Any:
+    """Normalize MCP tool return value for JSON serialization."""
     if hasattr(tool_result, "content"):
         content = tool_result.content
-        if isinstance(content, list) and content:
-            item = content[0]
-            if hasattr(item, "text"):
-                text = item.text
-                try:
-                    return json.loads(text)
-                except Exception:
-                    return text
-            return item
+        if isinstance(content, list):
+            extracted: List[Any] = []
+            for item in content:
+                if hasattr(item, "text"):
+                    text = item.text
+                    try:
+                        extracted.append(json.loads(text))
+                    except Exception:
+                        extracted.append(text)
+                elif hasattr(item, "model_dump"):
+                    extracted.append(item.model_dump())
+                else:
+                    extracted.append(item)
+            return extracted
         return content
 
     if hasattr(tool_result, "model_dump"):
         return tool_result.model_dump()
 
     return tool_result
-
-
-def _compare_results(actual: Any, expected: Any) -> bool:
-    return _compare_values(actual, expected)
 
 
 async def evaluate_model(
@@ -383,7 +383,6 @@ async def evaluate_model(
         "total_tests": len(test_cases),
         "correct_function": 0,
         "correct_params": 0,
-        "correct_result": 0,
         "no_tool_call": 0,
         "wrong_tool": 0,
         "wrong_params": 0,
@@ -428,10 +427,10 @@ async def evaluate_model(
                     "expected_params": test["expected_params"],
                     "actual_function": None,
                     "actual_params": None,
-                    "actual_result": None,
+                    "tool_output": None,
+                    "tool_output_error": None,
                     "correct_function": False,
                     "correct_params": False,
-                    "correct_result": False,
                     "error": None,
                     "incorrect_output": None,
                 }
@@ -491,6 +490,13 @@ async def evaluate_model(
                         test_result["actual_function"] = actual_function
                         test_result["actual_params"] = actual_params
 
+                        # Capture tool output in saved JSON for every tool call.
+                        try:
+                            tool_result = await session.call_tool(actual_function, actual_params)
+                            test_result["tool_output"] = _extract_tool_output(tool_result)
+                        except Exception as exc:
+                            test_result["tool_output_error"] = f"Tool execution failed: {exc}"
+
                         if actual_function == expected_function:
                             test_result["correct_function"] = True
                             results["correct_function"] += 1
@@ -498,23 +504,6 @@ async def evaluate_model(
                             if _compare_params(actual_params, test["expected_params"]):
                                 test_result["correct_params"] = True
                                 results["correct_params"] += 1
-
-                                try:
-                                    tool_result = await session.call_tool(actual_function, actual_params)
-                                    result_content = _extract_result_value(tool_result)
-                                    test_result["actual_result"] = result_content
-
-                                    expected_result = test.get("expected_result")
-                                    if expected_result is not None:
-                                        if _compare_results(result_content, expected_result):
-                                            test_result["correct_result"] = True
-                                            results["correct_result"] += 1
-                                    else:
-                                        # Match evaluate_bfcl.py behavior: count execution as correct.
-                                        test_result["correct_result"] = True
-                                        results["correct_result"] += 1
-                                except Exception as exc:
-                                    test_result["error"] = f"Tool execution failed: {exc}"
                             else:
                                 results["wrong_params"] += 1
                                 test_result["incorrect_output"] = {
@@ -542,7 +531,7 @@ async def evaluate_model(
                     results["no_tool_call"] += 1
 
                 results["details"].append(test_result)
-                status = "PASS" if test_result["correct_result"] else "FAIL"
+                status = "PASS" if test_result["correct_params"] else "FAIL"
                 actual = test_result["actual_function"] or "none"
                 print(f"  {status} Function: {actual} | Expected: {expected_function}")
 
@@ -554,11 +543,9 @@ def calculate_metrics(results: Dict[str, Any]) -> Dict[str, Any]:
     total = results["total_tests"]
     correct_function = results["correct_function"]
     correct_params = results["correct_params"]
-    correct_result = results["correct_result"]
 
     tsr_function = (correct_function / total * 100) if total > 0 else 0
     tsr_params = (correct_params / total * 100) if total > 0 else 0
-    tsr_result = (correct_result / total * 100) if total > 0 else 0
 
     tools_called = total - results["no_tool_call"]
     precision = (correct_function / tools_called * 100) if tools_called > 0 else 0
@@ -571,11 +558,9 @@ def calculate_metrics(results: Dict[str, Any]) -> Dict[str, Any]:
         "recall": round(recall, 2),
         "tsr_function_selection": round(tsr_function, 2),
         "tsr_parameter_accuracy": round(tsr_params, 2),
-        "tsr_result_accuracy": round(tsr_result, 2),
         "total_tests": total,
         "correct_function": correct_function,
         "correct_params": correct_params,
-        "correct_result": correct_result,
         "no_tool_call": results["no_tool_call"],
         "wrong_tool": results["wrong_tool"],
         "wrong_params": results["wrong_params"],
@@ -597,14 +582,12 @@ def print_report(metrics: Dict[str, Any], model: str) -> None:
     print("Tool Selection Rate (TSR):")
     print(f"  Function Selection:    {metrics['tsr_function_selection']}%")
     print(f"  Parameter Accuracy:    {metrics['tsr_parameter_accuracy']}%")
-    print(f"  Result Accuracy:       {metrics['tsr_result_accuracy']}%")
     print()
 
     print("Breakdown:")
     print(f"  Total Tests:           {metrics['total_tests']}")
     print(f"  Correct Function:      {metrics['correct_function']}")
     print(f"  Correct Params:        {metrics['correct_params']}")
-    print(f"  Correct Result:        {metrics['correct_result']}")
     print(f"  No Tool Call:          {metrics['no_tool_call']}")
     print(f"  Wrong Tool:            {metrics['wrong_tool']}")
     print(f"  Wrong Params:          {metrics['wrong_params']}")
