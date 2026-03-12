@@ -19,6 +19,10 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from openai import OpenAI
 from huggingface_hub import hf_hub_download
+from dotenv import load_dotenv
+
+load_dotenv()  # Load .env (DATABASE_URL, etc.) before anything else
+
 # Add mcp-client to path
 sys.path.append(str(Path(__file__).parent / "mcp-client"))
 
@@ -326,6 +330,12 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
                                         if _compare_results(result_content, test['expected_result']):
                                             test_result['correct_result'] = True
                                             results['correct_result'] += 1
+                                        else:
+                                            test_result['incorrect_output'] = {
+                                                'actual_result': result_content,
+                                                'expected_result': test['expected_result'],
+                                                'result_mismatch': True
+                                            }
                                     else:
                                         # If no expected result, count as correct if executed
                                         test_result['correct_result'] = True
@@ -434,7 +444,13 @@ def _compare_results(actual: Any, expected: Any) -> bool:
 
 
 def _extract_result_value(tool_result: Any) -> Any:
-    """Extract the actual result value from MCP tool result."""
+    """Extract the actual result value from MCP tool result.
+
+    Normalizes the value through a JSON round-trip so that Python-specific
+    types (Decimal, datetime, etc.) are converted to JSON-compatible primitives
+    that can be compared against the ground truth.
+    """
+    raw = None
     # Handle different MCP result formats
     if hasattr(tool_result, 'content'):
         content = tool_result.content
@@ -444,16 +460,23 @@ def _extract_result_value(tool_result: Any) -> Any:
                 # Parse JSON from text
                 try:
                     data = json.loads(item.text)
-                    return data.get('result', data)
-                except:
+                    raw = data.get('result', data)
+                except Exception:
                     return item.text
-            return item
-        return content
-    
-    if hasattr(tool_result, 'model_dump'):
-        return tool_result.model_dump()
-    
-    return tool_result
+            else:
+                raw = item
+        else:
+            raw = content
+    elif hasattr(tool_result, 'model_dump'):
+        raw = tool_result.model_dump()
+    else:
+        raw = tool_result
+
+    # JSON round-trip to normalize types (Decimal -> float/int, datetime -> str, etc.)
+    try:
+        return json.loads(json.dumps(raw, default=str))
+    except (TypeError, ValueError):
+        return raw
 
 
 def calculate_metrics(results: Dict) -> Dict:
@@ -530,6 +553,11 @@ def print_report(metrics: Dict, model: str):
     print()
 
 
+def _sanitize_filename(name: str) -> str:
+    """Replace characters invalid in Windows filenames."""
+    return name.replace(":", "_").replace("/", "_").replace("\\", "_")
+
+
 def save_results(results: Dict, metrics: Dict, model: str, output_path: Optional[str] = None):
     """Save evaluation results to JSON file."""
     output = {
@@ -538,17 +566,18 @@ def save_results(results: Dict, metrics: Dict, model: str, output_path: Optional
         'metrics': metrics,
         'raw_results': results
     }
-    
+
     if output_path:
         filename = output_path
         # Create directory if needed
         Path(filename).parent.mkdir(parents=True, exist_ok=True)
     else:
-        filename = f"bfcl_results_{model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    
-    with open(filename, 'w') as f:
-        json.dump(output, f, indent=2)
-    
+        safe_model = _sanitize_filename(model)
+        filename = f"bfcl_results_{safe_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(output, f, indent=2, default=str)
+
     print(f"Results saved to: {filename}")
 
 
@@ -648,8 +677,9 @@ async def main():
     # Save results
     if args.output is None and args.synthetic:
         dataset_name = Path(args.synthetic).stem
+        safe_model = _sanitize_filename(args.model)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        args.output = f"results/{dataset_name}_{args.model}_{timestamp}.json"
+        args.output = f"results/{dataset_name}_{safe_model}_{timestamp}.json"
     save_results(results, metrics, args.model, args.output)
 
     # Log to cloud database (skipped silently if .env not configured)
