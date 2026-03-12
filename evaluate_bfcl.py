@@ -19,7 +19,6 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from openai import OpenAI
 from huggingface_hub import hf_hub_download
-import json
 # Add mcp-client to path
 sys.path.append(str(Path(__file__).parent / "mcp-client"))
 
@@ -370,14 +369,17 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
 
 
 def _compare_params(actual: Dict, expected: Dict) -> bool:
-    """Compare parameter dictionaries, allowing for type coercion."""
-    if set(actual.keys()) != set(expected.keys()):
-        return False
-    
+    """Compare parameter dictionaries, allowing for type coercion and default values.
+
+    Extra keys in actual (not in expected) are allowed — the model may explicitly
+    pass default values that the ground truth omits.
+    """
     for key in expected.keys():
+        if key not in actual:
+            return False
         actual_val = actual[key]
         expected_val = expected[key]
-        
+
         # Handle list comparison
         if isinstance(expected_val, list) and isinstance(actual_val, list):
             if len(actual_val) != len(expected_val):
@@ -388,7 +390,7 @@ def _compare_params(actual: Dict, expected: Dict) -> bool:
         else:
             if not _compare_values(actual_val, expected_val):
                 return False
-    
+
     return True
 
 
@@ -410,7 +412,24 @@ def _compare_values(actual: Any, expected: Any) -> bool:
 
 
 def _compare_results(actual: Any, expected: Any) -> bool:
-    """Compare result values with tolerance for floats."""
+    """Compare result values with tolerance for floats and support for nested structures."""
+    # Direct equality
+    if actual == expected:
+        return True
+
+    # Both lists — compare element-wise
+    if isinstance(actual, list) and isinstance(expected, list):
+        if len(actual) != len(expected):
+            return False
+        return all(_compare_results(a, e) for a, e in zip(actual, expected))
+
+    # Both dicts — compare key-value pairs
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        if set(actual.keys()) != set(expected.keys()):
+            return False
+        return all(_compare_results(actual[k], expected[k]) for k in expected)
+
+    # Scalar comparison with type coercion
     return _compare_values(actual, expected)
 
 
@@ -627,6 +646,10 @@ async def main():
     print_report(metrics, args.model)
     
     # Save results
+    if args.output is None and args.synthetic:
+        dataset_name = Path(args.synthetic).stem
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        args.output = f"results/{dataset_name}_{args.model}_{timestamp}.json"
     save_results(results, metrics, args.model, args.output)
 
     # Log to cloud database (skipped silently if .env not configured)
@@ -635,7 +658,7 @@ async def main():
 
     print(f"\nEvaluation complete!")
     print(f"\nNext steps:")
-    print(f"1. Review results in bfcl_results_{args.model}_*.json")
+    print(f"1. Review results in {args.output}")
     print(f"2. Run for other models: python evaluate_bfcl.py --model llama3.2")
     print(f"3. Compare metrics across models")
 

@@ -12,20 +12,24 @@ import psycopg2
 from mcp.server.fastmcp import FastMCP
 
 # Create an MCP server
-mcp = FastMCP("Gorilla BFCL Math Tools", json_response=True)
+mcp = FastMCP("SQL Tools", json_response=True)
 
+
+# ============================================================================
+# MATH TOOLS TEMPORARILY DISABLED - testing SQL tools only
+# ============================================================================
 
 # ============================================================================
 # BFCL MATH TOOLS - Berkeley Function Calling Leaderboard
 # Source: https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard
 # Dataset: https://huggingface.co/datasets/gorilla-llm/Berkeley-Function-Calling-Leaderboard
-# 
+#
 # Functions adapted from BFCL MathAPI for threshold testing with open-source LLMs.
 # ============================================================================
 
 # -------------------- BASIC ARITHMETIC --------------------
 
-@mcp.tool()
+# @mcp.tool()
 def add(a: float, b: float) -> Dict:
     """
     Add two numbers.
@@ -43,7 +47,7 @@ def add(a: float, b: float) -> Dict:
         return {"error": "Both inputs must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def subtract(a: float, b: float) -> Dict:
     """
     Subtract one number from another.
@@ -61,7 +65,7 @@ def subtract(a: float, b: float) -> Dict:
         return {"error": "Both inputs must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def multiply(a: float, b: float) -> Dict:
     """
     Multiply two numbers.
@@ -81,7 +85,7 @@ def multiply(a: float, b: float) -> Dict:
         return {"error": "Both inputs must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def divide(a: float, b: float) -> Dict:
     """
     Divide one number by another.
@@ -103,7 +107,7 @@ def divide(a: float, b: float) -> Dict:
         return {"error": "Both inputs must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def power(base: float, exponent: float) -> Dict:
     """
     Raise a number to the power of another.
@@ -123,7 +127,7 @@ def power(base: float, exponent: float) -> Dict:
         return {"error": str(e)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def square_root(number: float, precision: int) -> Dict:
     """
     Calculate the square root of a number.
@@ -146,7 +150,7 @@ def square_root(number: float, precision: int) -> Dict:
         return {"error": str(e)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def absolute_value(number: float) -> Dict:
     """
     Calculate absolute value of a number.
@@ -165,7 +169,7 @@ def absolute_value(number: float) -> Dict:
         return {"error": "Input must be a number"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def round_number(number: float, decimal_places: int = 0) -> Dict:
     """
     Round a number to specified decimal places.
@@ -185,7 +189,7 @@ def round_number(number: float, decimal_places: int = 0) -> Dict:
         return {"error": str(e)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def percentage(part: float, whole: float) -> Dict:
     """
     Calculate what percentage one number is of another.
@@ -209,7 +213,7 @@ def percentage(part: float, whole: float) -> Dict:
 
 # -------------------- LIST OPERATIONS --------------------
 
-@mcp.tool()
+# @mcp.tool()
 def sum_values(numbers: List[float]) -> Dict:
     """
     Calculate the sum of a list of numbers.
@@ -228,7 +232,7 @@ def sum_values(numbers: List[float]) -> Dict:
         return {"error": "All elements in the list must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def mean(numbers: List[float]) -> Dict:
     """
     Calculate the mean (average) of a list of numbers.
@@ -247,7 +251,7 @@ def mean(numbers: List[float]) -> Dict:
         return {"error": "All elements in the list must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def min_value(numbers: List[float]) -> Dict:
     """
     Find the minimum value in a list.
@@ -266,7 +270,7 @@ def min_value(numbers: List[float]) -> Dict:
         return {"error": "All elements in the list must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def max_value(numbers: List[float]) -> Dict:
     """
     Find the maximum value in a list.
@@ -285,7 +289,7 @@ def max_value(numbers: List[float]) -> Dict:
         return {"error": "All elements in the list must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def standard_deviation(numbers: List[float]) -> Dict:
     """
     Calculate the standard deviation of a list of numbers.
@@ -308,7 +312,7 @@ def standard_deviation(numbers: List[float]) -> Dict:
 
 # -------------------- ADDITIONAL MATH TOOLS (THRESHOLD TESTING) --------------------
 
-@mcp.tool()
+# @mcp.tool()
 def add_three(a: float, b: float, c: float) -> Dict:
     """
     Add three numbers together.
@@ -326,7 +330,7 @@ def add_three(a: float, b: float, c: float) -> Dict:
     return {"result": a + b + c}
 
 
-@mcp.tool()
+# @mcp.tool()
 def modulo(a: float, b: float) -> Dict:
     """
     Calculate modulo (remainder of division).
@@ -345,7 +349,7 @@ def modulo(a: float, b: float) -> Dict:
     return {"result": a % b}
 
 
-@mcp.tool()
+# @mcp.tool()
 def factorial(n: int) -> Dict:
     """
     Calculate factorial of a number.
@@ -368,7 +372,7 @@ def factorial(n: int) -> Dict:
     return {"result": result}
 
 
-@mcp.tool()
+# @mcp.tool()
 def median(numbers: List[float]) -> Dict:
     """
     Calculate median of a list of numbers.
@@ -392,7 +396,7 @@ def median(numbers: List[float]) -> Dict:
         return {"error": "All elements must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def logarithm(number: float, base: float = 10) -> Dict:
     """
     Calculate logarithm of a number with specified base.
@@ -416,7 +420,7 @@ def logarithm(number: float, base: float = 10) -> Dict:
         return {"error": str(e)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def ceiling(number: float) -> Dict:
     """
     Round number up to nearest integer.
@@ -432,7 +436,7 @@ def ceiling(number: float) -> Dict:
     return {"result": math.ceil(number)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def floor(number: float) -> Dict:
     """
     Round number down to nearest integer.
@@ -448,7 +452,7 @@ def floor(number: float) -> Dict:
     return {"result": math.floor(number)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def range_values(numbers: List[float]) -> Dict:
     """
     Calculate range (max - min) of a list.
@@ -467,7 +471,7 @@ def range_values(numbers: List[float]) -> Dict:
         return {"error": "All elements must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def variance(numbers: List[float]) -> Dict:
     """
     Calculate variance of a list of numbers.
@@ -487,7 +491,7 @@ def variance(numbers: List[float]) -> Dict:
         return {"error": "All elements must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def gcd(a: int, b: int) -> Dict:
     """
     Calculate greatest common divisor of two integers.
@@ -504,7 +508,7 @@ def gcd(a: int, b: int) -> Dict:
     return {"result": math.gcd(a, b)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def lcm(a: int, b: int) -> Dict:
     """
     Calculate least common multiple of two integers.
@@ -521,7 +525,7 @@ def lcm(a: int, b: int) -> Dict:
     return {"result": abs(a * b) // math.gcd(a, b) if math.gcd(a, b) != 0 else 0}
 
 
-@mcp.tool()
+# @mcp.tool()
 def sine(angle: float, unit: str = "radians") -> Dict:
     """
     Calculate sine of an angle.
@@ -540,7 +544,7 @@ def sine(angle: float, unit: str = "radians") -> Dict:
     return {"result": math.sin(angle)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def cosine(angle: float, unit: str = "radians") -> Dict:
     """
     Calculate cosine of an angle.
@@ -559,7 +563,7 @@ def cosine(angle: float, unit: str = "radians") -> Dict:
     return {"result": math.cos(angle)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def tangent(angle: float, unit: str = "radians") -> Dict:
     """
     Calculate tangent of an angle.
@@ -578,7 +582,7 @@ def tangent(angle: float, unit: str = "radians") -> Dict:
     return {"result": math.tan(angle)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def exponential(x: float) -> Dict:
     """
     Calculate e raised to the power of x.
@@ -594,7 +598,7 @@ def exponential(x: float) -> Dict:
     return {"result": math.exp(x)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def natural_log(x: float) -> Dict:
     """
     Calculate natural logarithm (base e) of x.
@@ -612,7 +616,7 @@ def natural_log(x: float) -> Dict:
     return {"result": math.log(x)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def log10(x: float) -> Dict:
     """
     Calculate logarithm base 10 of x.
@@ -630,7 +634,7 @@ def log10(x: float) -> Dict:
     return {"result": math.log10(x)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def cube_root(x: float) -> Dict:
     """
     Calculate cube root of a number.
@@ -646,7 +650,7 @@ def cube_root(x: float) -> Dict:
     return {"result": math.copysign(abs(x) ** (1/3), x)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def nth_root(x: float, n: int) -> Dict:
     """
     Calculate nth root of a number.
@@ -667,7 +671,7 @@ def nth_root(x: float, n: int) -> Dict:
     return {"result": math.copysign(abs(x) ** (1/n), x) if x < 0 else x ** (1/n)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def hypotenuse(a: float, b: float) -> Dict:
     """
     Calculate hypotenuse of right triangle.
@@ -684,7 +688,7 @@ def hypotenuse(a: float, b: float) -> Dict:
     return {"result": math.hypot(a, b)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def radians_to_degrees(radians: float) -> Dict:
     """
     Convert radians to degrees.
@@ -700,7 +704,7 @@ def radians_to_degrees(radians: float) -> Dict:
     return {"result": math.degrees(radians)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def degrees_to_radians(degrees: float) -> Dict:
     """
     Convert degrees to radians.
@@ -716,7 +720,7 @@ def degrees_to_radians(degrees: float) -> Dict:
     return {"result": math.radians(degrees)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def permutation(n: int, r: int) -> Dict:
     """
     Calculate number of permutations: nPr = n!/(n-r)!
@@ -737,7 +741,7 @@ def permutation(n: int, r: int) -> Dict:
     return {"result": math.perm(n, r)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def combination(n: int, r: int) -> Dict:
     """
     Calculate number of combinations: nCr = n!/(r!(n-r)!)
@@ -758,7 +762,7 @@ def combination(n: int, r: int) -> Dict:
     return {"result": math.comb(n, r)}
 
 
-@mcp.tool()
+# @mcp.tool()
 def is_prime(n: int) -> Dict:
     """
     Check if a number is prime.
@@ -783,7 +787,7 @@ def is_prime(n: int) -> Dict:
     return {"result": True}
 
 
-@mcp.tool()
+# @mcp.tool()
 def sum_of_squares(numbers: List[float]) -> Dict:
     """
     Calculate sum of squares of a list.
@@ -802,7 +806,7 @@ def sum_of_squares(numbers: List[float]) -> Dict:
         return {"error": "All elements must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def product(numbers: List[float]) -> Dict:
     """
     Calculate product of all numbers in a list.
@@ -824,7 +828,7 @@ def product(numbers: List[float]) -> Dict:
         return {"error": "All elements must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def geometric_mean(numbers: List[float]) -> Dict:
     """
     Calculate geometric mean of a list.
@@ -848,7 +852,7 @@ def geometric_mean(numbers: List[float]) -> Dict:
         return {"error": "All elements must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def harmonic_mean(numbers: List[float]) -> Dict:
     """
     Calculate harmonic mean of a list.
@@ -869,7 +873,7 @@ def harmonic_mean(numbers: List[float]) -> Dict:
         return {"error": "All elements must be numbers"}
 
 
-@mcp.tool()
+# @mcp.tool()
 def clamp(value: float, min_val: float, max_val: float) -> Dict:
     """
     Clamp a value between minimum and maximum bounds.
@@ -889,7 +893,7 @@ def clamp(value: float, min_val: float, max_val: float) -> Dict:
     return {"result": max(min_val, min(value, max_val))}
 
 
-@mcp.tool()
+# @mcp.tool()
 def lerp(a: float, b: float, t: float) -> Dict:
     """
     Linear interpolation between two values.
@@ -907,7 +911,7 @@ def lerp(a: float, b: float, t: float) -> Dict:
     return {"result": a + (b - a) * t}
 
 
-@mcp.tool()
+# @mcp.tool()
 def sign(x: float) -> Dict:
     """
     Return the sign of a number.
@@ -931,7 +935,7 @@ def sign(x: float) -> Dict:
 # PROMPTS & RESOURCES
 # ============================================================================
 
-@mcp.prompt()
+# @mcp.prompt()
 def calculate_complex(operation: str, values: str) -> str:
     """Generate a prompt for complex calculations"""
     return f"Perform {operation} on these values: {values}. Show step-by-step calculation."
@@ -1001,15 +1005,14 @@ def list_tables(schema: str = "bookings") -> Dict:
         result: List of table names in the schema
     """
     try:
-        conn = _get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = %s ORDER BY table_name",
-            (schema,)
-        )
-        tables = [row[0] for row in cur.fetchall()]
-        conn.close()
+        with _get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = %s ORDER BY table_name",
+                    (schema,)
+                )
+                tables = [row[0] for row in cur.fetchall()]
         return {"result": tables}
     except Exception as e:
         return {"error": str(e)}
@@ -1028,15 +1031,14 @@ def describe_table(table_name: str, schema: str = "bookings") -> Dict:
         result: List of column definitions with name and data type
     """
     try:
-        conn = _get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
-            (schema, table_name)
-        )
-        cols = [{"column": row[0], "type": row[1]} for row in cur.fetchall()]
-        conn.close()
+        with _get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT column_name, data_type FROM information_schema.columns "
+                    "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
+                    (schema, table_name)
+                )
+                cols = [{"column": row[0], "type": row[1]} for row in cur.fetchall()]
         return {"result": cols}
     except Exception as e:
         return {"error": str(e)}
@@ -1055,11 +1057,15 @@ def get_row_count(table_name: str, schema: str = "bookings") -> Dict:
         result: Row count as integer
     """
     try:
-        conn = _get_db_connection()
-        cur = conn.cursor()
-        cur.execute(f"SELECT COUNT(*) FROM {schema}.{table_name}")
-        count = cur.fetchone()[0]
-        conn.close()
+        from psycopg2 import sql as psql
+        with _get_db_connection() as conn:
+            with conn.cursor() as cur:
+                query = psql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                    psql.Identifier(schema),
+                    psql.Identifier(table_name)
+                )
+                cur.execute(query)
+                count = cur.fetchone()[0]
         return {"result": count}
     except Exception as e:
         return {"error": str(e)}
@@ -1078,27 +1084,26 @@ def get_foreign_keys(table_name: str, schema: str = "bookings") -> Dict:
         result: List of foreign key relationships
     """
     try:
-        conn = _get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT kcu.column_name, ccu.table_name AS foreign_table,
-                   ccu.column_name AS foreign_column
-            FROM information_schema.table_constraints AS tc
-            JOIN information_schema.key_column_usage AS kcu
-              ON tc.constraint_name = kcu.constraint_name
-            JOIN information_schema.constraint_column_usage AS ccu
-              ON ccu.constraint_name = tc.constraint_name
-            WHERE tc.constraint_type = 'FOREIGN KEY'
-              AND tc.table_schema = %s AND tc.table_name = %s
-            """,
-            (schema, table_name)
-        )
-        fks = [
-            {"column": r[0], "references_table": r[1], "references_column": r[2]}
-            for r in cur.fetchall()
-        ]
-        conn.close()
+        with _get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT kcu.column_name, ccu.table_name AS foreign_table,
+                           ccu.column_name AS foreign_column
+                    FROM information_schema.table_constraints AS tc
+                    JOIN information_schema.key_column_usage AS kcu
+                      ON tc.constraint_name = kcu.constraint_name
+                    JOIN information_schema.constraint_column_usage AS ccu
+                      ON ccu.constraint_name = tc.constraint_name
+                    WHERE tc.constraint_type = 'FOREIGN KEY'
+                      AND tc.table_schema = %s AND tc.table_name = %s
+                    """,
+                    (schema, table_name)
+                )
+                fks = [
+                    {"column": r[0], "references_table": r[1], "references_column": r[2]}
+                    for r in cur.fetchall()
+                ]
         return {"result": fks}
     except Exception as e:
         return {"error": str(e)}
@@ -1117,13 +1122,12 @@ def execute_query(sql: str, limit: int = 50) -> Dict:
         result: List of rows as dictionaries
     """
     try:
-        conn = _get_db_connection()
-        cur = conn.cursor()
-        safe_sql = f"SELECT * FROM ({sql}) subq LIMIT {limit}"
-        cur.execute(safe_sql)
-        cols = [desc[0] for desc in cur.description]
-        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        conn.close()
+        with _get_db_connection() as conn:
+            with conn.cursor() as cur:
+                safe_sql = "SELECT * FROM (%s) subq LIMIT %s"
+                cur.execute(safe_sql, (psycopg2.extensions.AsIs(sql), limit))
+                cols = [desc[0] for desc in cur.description]
+                rows = [dict(zip(cols, row)) for row in cur.fetchall()]
         return {"result": rows, "row_count": len(rows)}
     except Exception as e:
         return {"error": str(e)}
