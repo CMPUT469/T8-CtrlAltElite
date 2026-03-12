@@ -15,7 +15,7 @@
 pip install -r requirements-eval.txt
 
 # 2. Verify tools work
-uv run python test_bfcl_tools.py
+python test_bfcl_tools.py
 
 # 3. Run F1/TSR evaluation (Week 2 deliverable)
 python evaluate_bfcl.py --model qwen2.5 --category simple --limit 50
@@ -59,7 +59,7 @@ standard_deviation(numbers: List)  # Calculate σ
 ## Verification: All Tools Working
 
 ```bash
-$ uv run python test_bfcl_tools.py
+$ python test_bfcl_tools.py
 All tests passed (add, divide, square_root, mean, standard_deviation)
 ```
 
@@ -82,7 +82,7 @@ Goal: Find the threshold limit of the qwen2.5 model
 pip install -r requirements-eval.txt
 
 # Verify tools are working
-uv run python test_bfcl_tools.py
+python test_bfcl_tools.py
 ```
 
 ### Three Testing Options
