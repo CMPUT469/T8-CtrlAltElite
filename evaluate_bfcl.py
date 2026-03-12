@@ -9,6 +9,7 @@ Dataset: gorilla-llm/Berkeley-Function-Calling-Leaderboard
 
 import asyncio
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -192,9 +193,10 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
     
     # Start MCP server
     server_params = StdioServerParameters(
-        command=sys.executable,
-        args=[str(Path(__file__).parent / "mcp-server" / "main.py")],
-        env=None
+        command="uv",
+        args=["run", "python", "main.py"],
+        env=dict(os.environ),
+        cwd=str(Path(__file__).parent / "mcp-server")
     )
     
     results = {
@@ -560,7 +562,26 @@ async def main():
     if args.synthetic:
         print(f"Loading synthetic tests from: {args.synthetic}")
         with open(args.synthetic, 'r') as f:
-            test_cases = json.load(f)
+            raw = [json.loads(line) for line in f if line.strip()]
+        # Convert raw BFCL format to processed format expected by evaluate_model
+        test_cases = []
+        for ex in raw:
+            question_list = ex.get('question', [[]])
+            query = ''
+            if question_list and isinstance(question_list[0], list):
+                for msg in question_list[0]:
+                    if isinstance(msg, dict) and msg.get('role') == 'user':
+                        query = msg.get('content', '')
+                        break
+            expected_call = ex.get('expected_call', {})
+            test_cases.append({
+                'id': ex.get('id', ''),
+                'query': query,
+                'expected_function': expected_call.get('name', ''),
+                'expected_params': expected_call.get('arguments', {}),
+                'expected_result': ex.get('expected_result'),
+                'category': 'postgres',
+            })
         print(f"Loaded {len(test_cases)} synthetic test cases")
     else:
         print(f"Dataset: {BFCL_DATASET}")
