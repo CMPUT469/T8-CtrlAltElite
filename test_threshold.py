@@ -398,11 +398,53 @@ class ThresholdTester:
         """Save results to JSON file"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"threshold_results_{self.model}_{timestamp}.json"
-        
+
         with open(filename, 'w') as f:
             json.dump(self.results, indent=2, fp=f)
-        
+
         print(f"\nResults saved to: {filename}")
+
+        # Log to cloud database (skipped silently if .env not configured)
+        try:
+            from db_logger import log_run
+            # Flatten per-suite details into a single list
+            all_details = []
+            total = passed = 0
+            for suite_name, suite_data in self.results.get("tests", {}).items():
+                total += suite_data.get("total", 0)
+                passed += suite_data.get("passed", 0)
+                for d in suite_data.get("details", []):
+                    all_details.append({
+                        "test_id": d.get("test_id", f"{suite_name}_{len(all_details)}"),
+                        "query": d.get("query"),
+                        "expected_function": d.get("expected_tool"),
+                        "actual_function": d.get("called_tool"),
+                        "expected_params": d.get("expected_params"),
+                        "actual_params": d.get("called_params"),
+                        "actual_result": d.get("result"),
+                        "correct_function": d.get("success", False),
+                        "correct_params": d.get("success", False),
+                        "correct_result": d.get("success", False),
+                        "error": d.get("reason") if not d.get("success") else None,
+                    })
+            accuracy = passed / total if total else 0
+            metrics = {
+                "f1_score": accuracy * 100,
+                "precision": accuracy * 100,
+                "recall": accuracy * 100,
+                "total_tests": total,
+                "correct_function": passed,
+                "correct_result": passed,
+                "no_tool_call": 0,
+                "wrong_tool": total - passed,
+            }
+            flat_results = {
+                "timestamp": self.results.get("timestamp"),
+                "details": all_details,
+            }
+            log_run(flat_results, metrics, model=self.model, suite="threshold")
+        except Exception:
+            pass
 
 
 # ============================================================================

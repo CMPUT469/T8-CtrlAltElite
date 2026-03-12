@@ -15,7 +15,7 @@
 pip install -r requirements-eval.txt
 
 # 2. Verify tools work
-uv run python test_bfcl_tools.py
+python test_bfcl_tools.py
 
 # 3. Run F1/TSR evaluation (Week 2 deliverable)
 python evaluate_bfcl.py --model qwen2.5 --category simple --limit 50
@@ -59,7 +59,7 @@ standard_deviation(numbers: List)  # Calculate σ
 ## Verification: All Tools Working
 
 ```bash
-$ uv run python test_bfcl_tools.py
+$ python test_bfcl_tools.py
 All tests passed (add, divide, square_root, mean, standard_deviation)
 ```
 
@@ -82,7 +82,7 @@ Goal: Find the threshold limit of the qwen2.5 model
 pip install -r requirements-eval.txt
 
 # Verify tools are working
-uv run python test_bfcl_tools.py
+python test_bfcl_tools.py
 ```
 
 ### Three Testing Options
@@ -133,6 +133,9 @@ python evaluate_bfcl.py --model qwen2.5 --category simple
 # Test with limited cases first
 python evaluate_bfcl.py --model qwen2.5 --category simple --limit 50
 
+# Optional: enable text-based fallback parsing for non-native tool-call experiments
+python evaluate_bfcl.py --model qwen2.5-coder:7b --category simple --limit 50 --allow_fallback
+
 # Just download dataset to inspect
 python evaluate_bfcl.py --download-only
 ```
@@ -142,6 +145,8 @@ python evaluate_bfcl.py --download-only
 - TSR (Tool Selection Rate) - function/params/results
 - Precision & Recall
 - Detailed per-test results
+
+**Default BFCL mode:** native tool-calling only. Models that cannot use native `tool_calls` are treated as incompatible / no-tool-call unless `--allow_fallback` is provided for experimental runs.
 
 Results saved to: `bfcl_results_qwen2.5_TIMESTAMP.json`
 

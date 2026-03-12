@@ -23,6 +23,116 @@ import json
 sys.path.append(str(Path(__file__).parent / "mcp-client"))
 
 BFCL_DATASET = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
+BFCL_RESULTS_DIR = Path("results") / "bfcl"
+NATIVE_TOOLS_INCOMPATIBLE_MSG = (
+    "Model {model} is not native tool-calling compatible under Ollama OpenAI endpoint. "
+    "Use a tools-capable model (Tools category: Llama 3.1, etc.)."
+)
+
+
+def _maybe_parse_fallback_tool_json(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Parse fallback JSON for models that answer in text instead of native tool_calls.
+    Expected format:
+      {"tool":"<name>","args":{...}}
+    """
+    if not text:
+        return None
+
+    candidate = text.strip()
+
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if len(lines) >= 3:
+            candidate = "\n".join(lines[1:-1]).strip()
+        else:
+            candidate = candidate.strip("`").strip()
+        if candidate.startswith("json"):
+            candidate = candidate[4:].strip()
+
+    if not (candidate.startswith("{") and candidate.endswith("}")):
+        return None
+
+    try:
+        payload = json.loads(candidate)
+    except Exception:
+        return None
+
+    if isinstance(payload, dict) and "tool" in payload and isinstance(payload.get("args"), dict):
+        return payload
+
+    return None
+
+
+def _probe_native_tool_support(ollama_client: OpenAI, model: str) -> tuple[bool, Optional[str]]:
+    """
+    Send a minimal native tool-calling request to check model compatibility.
+    """
+    try:
+        ollama_client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Call the ping tool."}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "ping",
+                        "description": "Return a simple ping payload.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "value": {"type": "string"}
+                            },
+                            "required": ["value"]
+                        },
+                    },
+                }
+            ],
+            tool_choice="auto"
+        )
+        return True, None
+    except Exception as exc:
+        message = str(exc)
+        if "does not support tools" in message.lower():
+            return False, NATIVE_TOOLS_INCOMPATIBLE_MSG.format(model=model)
+        return True, None
+
+
+def _build_incompatible_results(model: str, test_cases: List[Dict], message: str) -> Dict:
+    """Build a BFCL result payload when model does not support native tool calling."""
+    timestamp = datetime.now().isoformat()
+    details = []
+    for test in test_cases:
+        details.append({
+            'test_id': test['id'],
+            'query': test['query'],
+            'expected_function': test['expected_function'],
+            'expected_params': test['expected_params'],
+            'actual_function': None,
+            'actual_params': None,
+            'actual_result': None,
+            'correct_function': False,
+            'correct_params': False,
+            'correct_result': False,
+            'error': message,
+            'incorrect_output': None,
+            'call_source': 'none',
+        })
+
+    return {
+        'model': model,
+        'timestamp': timestamp,
+        'total_tests': len(test_cases),
+        'correct_function': 0,
+        'correct_params': 0,
+        'correct_result': 0,
+        'no_tool_call': len(test_cases),
+        'wrong_tool': 0,
+        'wrong_params': 0,
+        'details': details,
+        'model_native_tools_supported': False,
+        'allow_fallback': False,
+    }
 
 
 def download_bfcl_dataset(category: str = "simple"):
@@ -167,7 +277,13 @@ def filter_math_tests(data, category: str = None) -> List[Dict]:
     return processed_tests
 
 
-async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int] = None, num_distractors: Optional[int] = None):
+async def evaluate_model(
+    model: str,
+    test_cases: List[Dict],
+    limit: Optional[int] = None,
+    num_distractors: Optional[int] = None,
+    allow_fallback: bool = False,
+):
     """
     Run BFCL test cases against the model and calculate F1/TSR.
     
@@ -207,12 +323,21 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
         'no_tool_call': 0,
         'wrong_tool': 0,
         'wrong_params': 0,
-        'details': []
+        'details': [],
+        'model_native_tools_supported': True,
+        'allow_fallback': allow_fallback,
     }
     
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
+
+            if not allow_fallback:
+                supports_native_tools, compatibility_message = _probe_native_tool_support(ollama_client, model)
+                results['model_native_tools_supported'] = supports_native_tools
+                if not supports_native_tools:
+                    print(compatibility_message)
+                    return _build_incompatible_results(model, test_cases, compatibility_message)
             
             # Get available tools
             mcp_tools = await session.list_tools()
@@ -255,7 +380,8 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
                     'correct_params': False,
                     'correct_result': False,
                     'error': None,
-                    'incorrect_output': None  # Captures actual model output when there's an error
+                    'incorrect_output': None,  # Captures actual model output when there's an error
+                    'call_source': 'none',
                 }
                 
                 try:
@@ -283,6 +409,13 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
                         {"role": "system", "content": "You are a helpful assistant. Use the provided tools when needed."},
                         {"role": "user", "content": test['query']}
                     ]
+                    if allow_fallback:
+                        messages[0]["content"] = (
+                            "You are a helpful assistant. Use the provided tools when needed.\n\n"
+                            "If you want to call a tool but cannot emit a native tool call, "
+                            "respond with ONLY valid JSON in this exact format:\n"
+                            '{"tool":"<tool_name>","args":{...}}'
+                        )
                     
                     response = ollama_client.chat.completions.create(
                         model=model,
@@ -299,27 +432,43 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
                         tool_call = tool_calls[0]
                         actual_function = tool_call.function.name
                         actual_params = json.loads(tool_call.function.arguments or "{}")
-                        
+                        test_result['call_source'] = 'native'
+                    elif allow_fallback:
+                        raw_text = (message.content or "").strip() if hasattr(message, 'content') else ""
+                        fallback = _maybe_parse_fallback_tool_json(raw_text)
+                        if fallback:
+                            actual_function = str(fallback["tool"])
+                            actual_params = fallback["args"]
+                            test_result['incorrect_output'] = raw_text
+                            test_result['call_source'] = 'fallback'
+                        else:
+                            actual_function = None
+                            actual_params = None
+                    else:
+                        actual_function = None
+                        actual_params = None
+
+                    if actual_function is not None:
                         test_result['actual_function'] = actual_function
                         test_result['actual_params'] = actual_params
-                        
+
                         # Check function correctness
                         if actual_function == test['expected_function']:
                             test_result['correct_function'] = True
                             results['correct_function'] += 1
-                            
+
                             # Check parameter correctness
                             params_match = _compare_params(actual_params, test['expected_params'])
                             if params_match:
                                 test_result['correct_params'] = True
                                 results['correct_params'] += 1
-                                
+
                                 # Execute tool and check result
                                 try:
                                     tool_result = await session.call_tool(actual_function, actual_params)
                                     result_content = _extract_result_value(tool_result)
                                     test_result['actual_result'] = result_content
-                                    
+
                                     # Compare with expected result
                                     if test.get('expected_result') is not None:
                                         if _compare_results(result_content, test['expected_result']):
@@ -329,7 +478,7 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
                                         # If no expected result, count as correct if executed
                                         test_result['correct_result'] = True
                                         results['correct_result'] += 1
-                                        
+
                                 except Exception as e:
                                     test_result['error'] = f"Tool execution failed: {str(e)}"
                             else:
@@ -519,11 +668,13 @@ def save_results(results: Dict, metrics: Dict, model: str, output_path: Optional
     }
     
     if output_path:
-        filename = output_path
+        filename = Path(output_path)
         # Create directory if needed
-        Path(filename).parent.mkdir(parents=True, exist_ok=True)
+        filename.parent.mkdir(parents=True, exist_ok=True)
     else:
-        filename = f"bfcl_results_{model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        safe_model = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in model)
+        filename = BFCL_RESULTS_DIR / f"bfcl_results_{safe_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filename.parent.mkdir(parents=True, exist_ok=True)
     
     with open(filename, 'w') as f:
         json.dump(output, f, indent=2)
@@ -546,6 +697,11 @@ async def main():
     parser.add_argument("--synthetic", type=str, default=None, help="Use synthetic test file instead of BFCL")
     parser.add_argument("--oracle-mode", action="store_true", help="Oracle mode: only provide the relevant tool (no distractors)")
     parser.add_argument("--num-distractors", type=int, default=None, help="Number of distractor tools to include (0 = oracle mode)")
+    parser.add_argument(
+        "--allow_fallback",
+        action="store_true",
+        help="Allow text-based fallback JSON tool requests. Default BFCL mode is native tool-calling only.",
+    )
     
     args = parser.parse_args()
     
@@ -597,7 +753,13 @@ async def main():
     
     # Run evaluation
     num_distractors = args.num_distractors if args.num_distractors is not None else (0 if args.oracle_mode else None)
-    results = await evaluate_model(args.model, test_cases, args.limit, num_distractors=num_distractors)
+    results = await evaluate_model(
+        args.model,
+        test_cases,
+        args.limit,
+        num_distractors=num_distractors,
+        allow_fallback=args.allow_fallback,
+    )
     
     # Calculate metrics
     metrics = calculate_metrics(results)
@@ -607,10 +769,14 @@ async def main():
     
     # Save results
     save_results(results, metrics, args.model, args.output)
-    
+
+    # Log to cloud database (skipped silently if .env not configured)
+    from db_logger import log_run
+    log_run(results, metrics, model=args.model, suite="bfcl", num_distractors=num_distractors)
+
     print(f"\nEvaluation complete!")
     print(f"\nNext steps:")
-    print(f"1. Review results in bfcl_results_{args.model}_*.json")
+    print(f"1. Review results in {BFCL_RESULTS_DIR}")
     print(f"2. Run for other models: python evaluate_bfcl.py --model llama3.2")
     print(f"3. Compare metrics across models")
 

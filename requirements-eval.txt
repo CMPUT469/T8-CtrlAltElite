@@ -1,4 +1,7 @@
 # Requirements for BFCL Evaluation (Week 2)
 datasets>=2.14.0
 huggingface-hub>=0.19.0
+mcp>=1.26.0
 openai>=1.0.0  # For Ollama OpenAI-compatible API
+supabase>=2.0.0
+python-dotenv>=1.0.0

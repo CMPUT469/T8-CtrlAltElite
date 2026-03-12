@@ -12,7 +12,7 @@ build/
 venv/
 env/
 ENV/
-.venv
+.venv*
 
 # IDEs
 .vscode/
@@ -29,6 +29,8 @@ ENV/
 !pyproject.toml
 threshold_results_*.json
 bfcl_results_*.json
+results/
+bfcl_results_*
 
 # Logs
 *.log
