@@ -23,6 +23,41 @@ import json
 sys.path.append(str(Path(__file__).parent / "mcp-client"))
 
 BFCL_DATASET = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
+BFCL_RESULTS_DIR = Path("results") / "bfcl"
+
+
+def _maybe_parse_fallback_tool_json(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Parse fallback JSON for models that answer in text instead of native tool_calls.
+    Expected format:
+      {"tool":"<name>","args":{...}}
+    """
+    if not text:
+        return None
+
+    candidate = text.strip()
+
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if len(lines) >= 3:
+            candidate = "\n".join(lines[1:-1]).strip()
+        else:
+            candidate = candidate.strip("`").strip()
+        if candidate.startswith("json"):
+            candidate = candidate[4:].strip()
+
+    if not (candidate.startswith("{") and candidate.endswith("}")):
+        return None
+
+    try:
+        payload = json.loads(candidate)
+    except Exception:
+        return None
+
+    if isinstance(payload, dict) and "tool" in payload and isinstance(payload.get("args"), dict):
+        return payload
+
+    return None
 
 
 def download_bfcl_dataset(category: str = "simple"):
@@ -280,7 +315,15 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
                     
                     # Call Ollama model with tools
                     messages = [
-                        {"role": "system", "content": "You are a helpful assistant. Use the provided tools when needed."},
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a helpful assistant. Use the provided tools when needed.\n\n"
+                                "If you want to call a tool but cannot emit a native tool call, "
+                                "respond with ONLY valid JSON in this exact format:\n"
+                                '{"tool":"<tool_name>","args":{...}}'
+                            ),
+                        },
                         {"role": "user", "content": test['query']}
                     ]
                     
@@ -299,27 +342,38 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
                         tool_call = tool_calls[0]
                         actual_function = tool_call.function.name
                         actual_params = json.loads(tool_call.function.arguments or "{}")
-                        
+                    else:
+                        raw_text = (message.content or "").strip() if hasattr(message, 'content') else ""
+                        fallback = _maybe_parse_fallback_tool_json(raw_text)
+                        if fallback:
+                            actual_function = str(fallback["tool"])
+                            actual_params = fallback["args"]
+                            test_result['incorrect_output'] = raw_text
+                        else:
+                            actual_function = None
+                            actual_params = None
+
+                    if actual_function is not None:
                         test_result['actual_function'] = actual_function
                         test_result['actual_params'] = actual_params
-                        
+
                         # Check function correctness
                         if actual_function == test['expected_function']:
                             test_result['correct_function'] = True
                             results['correct_function'] += 1
-                            
+
                             # Check parameter correctness
                             params_match = _compare_params(actual_params, test['expected_params'])
                             if params_match:
                                 test_result['correct_params'] = True
                                 results['correct_params'] += 1
-                                
+
                                 # Execute tool and check result
                                 try:
                                     tool_result = await session.call_tool(actual_function, actual_params)
                                     result_content = _extract_result_value(tool_result)
                                     test_result['actual_result'] = result_content
-                                    
+
                                     # Compare with expected result
                                     if test.get('expected_result') is not None:
                                         if _compare_results(result_content, test['expected_result']):
@@ -329,7 +383,7 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
                                         # If no expected result, count as correct if executed
                                         test_result['correct_result'] = True
                                         results['correct_result'] += 1
-                                        
+
                                 except Exception as e:
                                     test_result['error'] = f"Tool execution failed: {str(e)}"
                             else:
@@ -519,11 +573,13 @@ def save_results(results: Dict, metrics: Dict, model: str, output_path: Optional
     }
     
     if output_path:
-        filename = output_path
+        filename = Path(output_path)
         # Create directory if needed
-        Path(filename).parent.mkdir(parents=True, exist_ok=True)
+        filename.parent.mkdir(parents=True, exist_ok=True)
     else:
-        filename = f"bfcl_results_{model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        safe_model = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in model)
+        filename = BFCL_RESULTS_DIR / f"bfcl_results_{safe_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filename.parent.mkdir(parents=True, exist_ok=True)
     
     with open(filename, 'w') as f:
         json.dump(output, f, indent=2)
@@ -614,7 +670,7 @@ async def main():
 
     print(f"\nEvaluation complete!")
     print(f"\nNext steps:")
-    print(f"1. Review results in bfcl_results_{args.model}_*.json")
+    print(f"1. Review results in {BFCL_RESULTS_DIR}")
     print(f"2. Run for other models: python evaluate_bfcl.py --model llama3.2")
     print(f"3. Compare metrics across models")
 
