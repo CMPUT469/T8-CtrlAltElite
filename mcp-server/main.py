@@ -10,6 +10,7 @@ import os
 import httpx
 import logging
 import sys
+from urllib.parse import urlencode
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
@@ -961,6 +962,33 @@ async def make_request(url: str) -> dict[str, any] | None:
             return {"Error": str(e)}
 
 
+def build_api_url(path: str, **params: object) -> str:
+    query = urlencode({key: value for key, value in params.items() if value is not None})
+    return f"{FINANCIAL_DATASETS_API_BASE}{path}" + (f"?{query}" if query else "")
+
+
+def dump_api_items(data: dict | None, field: str, error_message: str) -> str:
+    if not data:
+        return error_message
+
+    items = data.get(field, [])
+    if not items:
+        return error_message
+
+    return json.dumps(items, indent=2)
+
+
+def dump_api_object(data: dict | None, field: str, error_message: str) -> str:
+    if not data:
+        return error_message
+
+    item = data.get(field, {})
+    if not item:
+        return error_message
+
+    return json.dumps(item, indent=2)
+
+
 @mcp.tool()
 async def get_income_statements(
     ticker: str,
@@ -1285,6 +1313,142 @@ async def get_sec_filings(
 
     # Stringify the SEC filings
     return json.dumps(filings, indent=2)
+
+
+@mcp.tool()
+async def getAnalystEstimates(
+    ticker: str,
+    period: str = "annual",
+    limit: int = 4,
+) -> str:
+    """Get analyst consensus estimates for a company."""
+    url = build_api_url(
+        "/analyst-estimates/",
+        ticker=ticker,
+        period=period,
+        limit=limit,
+    )
+    data = await make_request(url)
+    return dump_api_items(
+        data,
+        "analyst_estimates",
+        "Unable to fetch analyst estimates or no analyst estimates found.",
+    )
+
+
+@mcp.tool()
+async def getFinancialMetrics(
+    ticker: str,
+    period: str = "annual",
+    limit: int = 4,
+) -> str:
+    """Get historical financial metrics for a company."""
+    url = build_api_url(
+        "/financial-metrics/",
+        ticker=ticker,
+        period=period,
+        limit=limit,
+    )
+    data = await make_request(url)
+    return dump_api_items(
+        data,
+        "financial_metrics",
+        "Unable to fetch financial metrics or no financial metrics found.",
+    )
+
+
+@mcp.tool()
+async def getFinancialMetricsSnapshot(ticker: str) -> str:
+    """Get the latest financial metrics snapshot for a company."""
+    url = build_api_url("/financial-metrics/snapshot/", ticker=ticker)
+    data = await make_request(url)
+    return dump_api_object(
+        data,
+        "snapshot",
+        "Unable to fetch financial metrics snapshot or no snapshot found.",
+    )
+
+
+@mcp.tool()
+async def getSegmentedRevenues(
+    ticker: str,
+    period: str = "annual",
+    limit: int = 4,
+) -> str:
+    """Get segmented revenue data for a company."""
+    url = build_api_url(
+        "/financials/segmented-revenues/",
+        ticker=ticker,
+        period=period,
+        limit=limit,
+    )
+    data = await make_request(url)
+    return dump_api_items(
+        data,
+        "segmented_revenues",
+        "Unable to fetch segmented revenues or no segmented revenues found.",
+    )
+
+
+@mcp.tool()
+async def getFilingItems(
+    ticker: str,
+    filing_type: str,
+    filing_date: str,
+    item: str,
+) -> str:
+    """Extract specific sections from a filing."""
+    url = build_api_url(
+        "/filings/items/",
+        ticker=ticker,
+        filing_type=filing_type,
+        filing_date=filing_date,
+        item=item,
+    )
+    data = await make_request(url)
+    if not data:
+        return "Unable to fetch filing items or no filing items found."
+
+    filing_item = data.get("filing_item")
+    if filing_item:
+        return json.dumps(filing_item, indent=2)
+
+    items = data.get("filing_items", [])
+    if items:
+        return json.dumps(items, indent=2)
+
+    return "Unable to fetch filing items or no filing items found."
+
+
+@mcp.tool()
+async def getAvailableFilingItems(filing_type: str) -> str:
+    """Get a list of extractable items for a filing type."""
+    url = build_api_url("/filings/items/available/", filing_type=filing_type)
+    data = await make_request(url)
+    return dump_api_items(
+        data,
+        "items",
+        "Unable to fetch available filing items or no filing items found.",
+    )
+
+
+@mcp.tool()
+async def getCompanyFacts(ticker: str) -> str:
+    """Get company details such as market cap, sector, industry, and exchange."""
+    url = build_api_url("/company/facts/", ticker=ticker)
+    data = await make_request(url)
+    if not data:
+        return "Unable to fetch company facts or no company facts found."
+
+    company_facts = data.get("company_facts")
+    if company_facts:
+        return json.dumps(company_facts, indent=2)
+
+    facts = data.get("facts")
+    if facts:
+        return json.dumps(facts, indent=2)
+
+    return "Unable to fetch company facts or no company facts found."
 
 # ============================================================================
 # PROMPTS & RESOURCES

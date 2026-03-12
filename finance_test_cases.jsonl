@@ -20,3 +20,10 @@
 {"id":"finance_020","query":"Return annual income statements for Nvidia with limit 3.","expected_function":"get_income_statements","expected_params":{"ticker":"NVDA","period":"annual","limit":3},"category":"finance"}
 {"id":"finance_021","query":"Fetch quarterly balance sheets for Tesla and return 2 records.","expected_function":"get_balance_sheets","expected_params":{"ticker":"TSLA","period":"quarterly","limit":2},"category":"finance"}
 {"id":"finance_022","query":"Get annual cash flow statements for Apple, limit to 4.","expected_function":"get_cash_flow_statements","expected_params":{"ticker":"AAPL","period":"annual","limit":4},"category":"finance"}
+{"id":"finance_023","query":"Get annual analyst estimates for Apple and return the latest 2 records.","expected_function":"getAnalystEstimates","expected_params":{"ticker":"AAPL","period":"annual","limit":2},"category":"finance"}
+{"id":"finance_024","query":"Show quarterly financial metrics for Microsoft, limit to 3.","expected_function":"getFinancialMetrics","expected_params":{"ticker":"MSFT","period":"quarterly","limit":3},"category":"finance"}
+{"id":"finance_025","query":"What is the latest financial metrics snapshot for Nvidia?","expected_function":"getFinancialMetricsSnapshot","expected_params":{"ticker":"NVDA"},"category":"finance"}
+{"id":"finance_026","query":"Get annual segmented revenues for Tesla with 2 records.","expected_function":"getSegmentedRevenues","expected_params":{"ticker":"TSLA","period":"annual","limit":2},"category":"finance"}
+{"id":"finance_027","query":"List the available filing items for 10-K filings.","expected_function":"getAvailableFilingItems","expected_params":{"filing_type":"10-K"},"category":"finance"}
+{"id":"finance_028","query":"Get the Risk Factors section from Apple's 10-K filed on 2024-11-01.","expected_function":"getFilingItems","expected_params":{"ticker":"AAPL","filing_type":"10-K","filing_date":"2024-11-01","item":"Risk Factors"},"category":"finance"}
+{"id":"finance_029","query":"Get company facts for Microsoft.","expected_function":"getCompanyFacts","expected_params":{"ticker":"MSFT"},"category":"finance"}
