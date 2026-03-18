@@ -33,6 +33,7 @@ from evaluation_framework import (
     compare_params,
     extract_result_value,
     calculate_metrics,
+    mcp_tools_to_openai_tools,
     print_report,
     maybe_parse_fallback_tool_json,
     save_results
@@ -98,17 +99,7 @@ async def run_jefferson_evaluation(
             print(f"Connected! Available tools: {len(tools_list.tools)}")
             
             # Convert to OpenAI format
-            all_openai_tools = []
-            for tool in tools_list.tools:
-                openai_tool = {
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description or "",
-                        "parameters": tool.inputSchema
-                    }
-                }
-                all_openai_tools.append(openai_tool)
+            all_openai_tools = mcp_tools_to_openai_tools(tools_list)
             
             print(f"Running {len(all_tests)} tests...\n")
             

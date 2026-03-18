@@ -51,79 +51,11 @@ from inference_backend import (
     resolve_backend_config,
     run_chat_completion,
 )
-
-
-def _json_dumps_safe(value: Any) -> str:
-    try:
-        return json.dumps(value, ensure_ascii=False)
-    except Exception:
-        return json.dumps(str(value), ensure_ascii=False)
-
-
-def _normalize_mcp_tool_result(result: Any) -> str:
-    """
-    MCP tool results vary slightly by SDK version.
-    Try to convert to a compact string to feed back to the LLM.
-    """
-
-    content = getattr(result, "content", None)
-    if content is not None:
-        return _json_dumps_safe(content)
-
-    # Some versions may provide model_dump()
-    if hasattr(result, "model_dump"):
-        return _json_dumps_safe(result.model_dump())
-
-    return _json_dumps_safe(result)
-
-
-def _mcp_tools_to_openai_tools(mcp_tools: Any) -> List[Dict[str, Any]]:
-    """
-    Convert MCP tool definitions into OpenAI-compatible "tools" schema.
-    Ollama supports an OpenAI-compatible chat.completions endpoint.
-    """
-    openai_tools: List[Dict[str, Any]] = []
-    for tool in mcp_tools.tools:
-        openai_tools.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": (tool.description or ""),
-                    "parameters": (tool.inputSchema or {}),
-                },
-            }
-        )
-    return openai_tools
-
-
-def _maybe_parse_fallback_tool_json(text: str) -> Optional[Dict[str, Any]]:
-    """
-    Fallback path: if the model doesn't emit tool_calls, we ask it to output ONLY:
-      {"tool":"<name>","args":{...}}
-    """
-    if not text:
-        return None
-    s = text.strip()
-
-    # Allow fenced JSON blocks too
-    if s.startswith("```"):
-        s = s.strip("`")
-        # common patterns: ```json\n{...}\n```
-        s = s.replace("json\n", "", 1).strip()
-
-    if not (s.startswith("{") and s.endswith("}")):
-        return None
-
-    try:
-        obj = json.loads(s)
-    except Exception:
-        return None
-
-    if isinstance(obj, dict) and "tool" in obj and "args" in obj and isinstance(obj["args"], dict):
-        return obj
-
-    return None
+from evaluation_framework import (
+    mcp_tools_to_openai_tools,
+    maybe_parse_fallback_tool_json,
+    normalize_mcp_tool_result,
+)
 
 
 class BackendChatModel:
@@ -189,7 +121,7 @@ class UniversalMcpClient:
     async def _load_tools(self) -> Tuple[Any, List[Dict[str, Any]]]:
         assert self._mcp.session is not None
         mcp_tools = await self._mcp.session.list_tools()
-        openai_tools = _mcp_tools_to_openai_tools(mcp_tools)
+        openai_tools = mcp_tools_to_openai_tools(mcp_tools)
         return mcp_tools, openai_tools
 
     async def answer(self, user_query: str) -> str:
@@ -244,7 +176,7 @@ class UniversalMcpClient:
 
         # Path B: fallback JSON tool request
         raw_text = (first_msg.content or "").strip()
-        fallback = _maybe_parse_fallback_tool_json(raw_text)
+        fallback = maybe_parse_fallback_tool_json(raw_text)
         if fallback:
             tool_name = str(fallback["tool"])
             tool_args = fallback["args"]

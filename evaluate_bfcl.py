@@ -12,7 +12,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 from datasets import load_dataset
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -26,6 +26,12 @@ from inference_backend import (
     resolve_backend_config,
     run_chat_completion,
 )
+from evaluation_framework import (
+    compare_values,
+    extract_result_value,
+    mcp_tools_to_openai_tools,
+    maybe_parse_fallback_tool_json,
+)
 
 load_dotenv()  # Load .env (DATABASE_URL, etc.) before anything else
 
@@ -35,41 +41,6 @@ NATIVE_TOOLS_INCOMPATIBLE_MSG = (
     "Model {model} is not native tool-calling compatible under Ollama OpenAI endpoint. "
     "Use a tools-capable model (Tools category: Llama 3.1, etc.)."
 )
-
-
-def _maybe_parse_fallback_tool_json(text: str) -> Optional[Dict[str, Any]]:
-    """
-    Parse fallback JSON for models that answer in text instead of native tool_calls.
-    Expected format:
-      {"tool":"<name>","args":{...}}
-    """
-    if not text:
-        return None
-
-    candidate = text.strip()
-
-    if candidate.startswith("```"):
-        lines = candidate.splitlines()
-        if len(lines) >= 3:
-            candidate = "\n".join(lines[1:-1]).strip()
-        else:
-            candidate = candidate.strip("`").strip()
-        if candidate.startswith("json"):
-            candidate = candidate[4:].strip()
-
-    if not (candidate.startswith("{") and candidate.endswith("}")):
-        return None
-
-    try:
-        payload = json.loads(candidate)
-    except Exception:
-        return None
-
-    if isinstance(payload, dict) and "tool" in payload and isinstance(payload.get("args"), dict):
-        return payload
-
-    return None
-
 
 def _probe_native_tool_support(client, config: BackendConfig) -> tuple[bool, Optional[str]]:
     """
@@ -361,16 +332,7 @@ async def evaluate_model(
                 print(f"Running in STANDARD MODE (all {len(all_tools)} tools available)\n")
             
             # Convert MCP tools to OpenAI format
-            all_openai_tools = []
-            for tool in all_tools:
-                all_openai_tools.append({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description or "",
-                        "parameters": tool.inputSchema or {}
-                    }
-                })
+            all_openai_tools = mcp_tools_to_openai_tools(mcp_tools)
             
             # Run each test case
             for i, test in enumerate(test_cases, 1):
@@ -444,7 +406,7 @@ async def evaluate_model(
                         test_result['call_source'] = 'native'
                     elif allow_fallback:
                         raw_text = (message.content or "").strip() if hasattr(message, 'content') else ""
-                        fallback = _maybe_parse_fallback_tool_json(raw_text)
+                        fallback = maybe_parse_fallback_tool_json(raw_text)
                         if fallback:
                             actual_function = str(fallback["tool"])
                             actual_params = fallback["args"]
@@ -465,7 +427,7 @@ async def evaluate_model(
                         # Execute tool call and compare outcome with ground truth
                         try:
                             tool_result = await session.call_tool(actual_function, actual_params)
-                            result_content = _extract_result_value(tool_result)
+                            result_content = extract_result_value(tool_result)
                             test_result['actual_result'] = result_content
 
                             # Get expected outcome from ground truth
@@ -474,7 +436,7 @@ async def evaluate_model(
                             # E(O, Ô): Binary evaluation based on outcome match
                             outcome_matches = False
                             if expected_outcome is not None:
-                                outcome_matches = _compare_results(result_content, expected_outcome)
+                                outcome_matches = compare_values(result_content, expected_outcome)
                             
                             # Binary score: 1 if outcomes match, 0 otherwise
                             if outcome_matches:
@@ -547,107 +509,6 @@ def _compare_params(actual: Dict, expected: Dict) -> bool:
                 return False
 
     return True
-
-
-def _compare_values(actual: Any, expected: Any, tolerance: float = 0.01) -> bool:
-    """Compare two values with type coercion and tolerance for numerical values."""
-    # Try direct comparison
-    if actual == expected:
-        return True
-    
-    # Handle dict vs primitive comparison (e.g., {"result": 1.803} vs 1.803)
-    if isinstance(expected, dict) and not isinstance(actual, dict):
-        # Extract value from dict (try common keys)
-        for key in ['result', 'value', 'output']:
-            if key in expected:
-                expected = expected[key]
-                break
-    elif isinstance(actual, dict) and not isinstance(expected, dict):
-        # Extract value from dict
-        for key in ['result', 'value', 'output']:
-            if key in actual:
-                actual = actual[key]
-                break
-    
-    # Try numeric comparison with tolerance
-    try:
-        actual_num = float(actual)
-        expected_num = float(expected)
-        return abs(actual_num - expected_num) < tolerance
-    except (ValueError, TypeError):
-        pass
-    
-    # Handle list/array comparison
-    if isinstance(actual, (list, tuple)) and isinstance(expected, (list, tuple)):
-        if len(actual) != len(expected):
-            return False
-        return all(_compare_values(a, e, tolerance) for a, e in zip(actual, expected))
-    
-    # Handle dict comparison recursively
-    if isinstance(actual, dict) and isinstance(expected, dict):
-        if set(actual.keys()) != set(expected.keys()):
-            return False
-        return all(_compare_values(actual[k], expected[k], tolerance) for k in actual.keys())
-    
-    return False
-
-
-def _compare_results(actual: Any, expected: Any) -> bool:
-    """Compare result values with tolerance for floats and support for nested structures."""
-    # Direct equality
-    if actual == expected:
-        return True
-
-    # Both lists — compare element-wise
-    if isinstance(actual, list) and isinstance(expected, list):
-        if len(actual) != len(expected):
-            return False
-        return all(_compare_results(a, e) for a, e in zip(actual, expected))
-
-    # Both dicts — compare key-value pairs
-    if isinstance(actual, dict) and isinstance(expected, dict):
-        if set(actual.keys()) != set(expected.keys()):
-            return False
-        return all(_compare_results(actual[k], expected[k]) for k in expected)
-
-    # Scalar comparison with type coercion
-    return _compare_values(actual, expected)
-
-
-def _extract_result_value(tool_result: Any) -> Any:
-    """Extract the actual result value from MCP tool result.
-
-    Normalizes the value through a JSON round-trip so that Python-specific
-    types (Decimal, datetime, etc.) are converted to JSON-compatible primitives
-    that can be compared against the ground truth.
-    """
-    raw = None
-    # Handle different MCP result formats
-    if hasattr(tool_result, 'content'):
-        content = tool_result.content
-        if isinstance(content, list) and len(content) > 0:
-            item = content[0]
-            if hasattr(item, 'text'):
-                # Parse JSON from text
-                try:
-                    data = json.loads(item.text)
-                    raw = data.get('result', data)
-                except Exception:
-                    return item.text
-            else:
-                raw = item
-        else:
-            raw = content
-    elif hasattr(tool_result, 'model_dump'):
-        raw = tool_result.model_dump()
-    else:
-        raw = tool_result
-
-    # JSON round-trip to normalize types (Decimal -> float/int, datetime -> str, etc.)
-    try:
-        return json.loads(json.dumps(raw, default=str))
-    except (TypeError, ValueError):
-        return raw
 
 
 def calculate_metrics(results: Dict) -> Dict:

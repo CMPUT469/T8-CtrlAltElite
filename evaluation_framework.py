@@ -13,10 +13,47 @@ Core Features:
 - Result comparison with type coercion
 """
 
-import json
-from datetime import datetime
-from typing import Any, Dict, List, Optional
 from pathlib import Path
+from datetime import datetime
+import json
+from typing import Any, Dict, List, Optional
+
+
+def json_dumps_safe(value: Any) -> str:
+    """Serialize a value safely for logging or feeding back to the model."""
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except Exception:
+        return json.dumps(str(value), ensure_ascii=False)
+
+
+def mcp_tools_to_openai_tools(mcp_tools: Any) -> List[Dict[str, Any]]:
+    """Convert MCP tool definitions into OpenAI-compatible tools schema."""
+    openai_tools: List[Dict[str, Any]] = []
+    for tool in mcp_tools.tools:
+        openai_tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "parameters": tool.inputSchema or {},
+                },
+            }
+        )
+    return openai_tools
+
+
+def normalize_mcp_tool_result(result: Any) -> str:
+    """Normalize MCP tool output into a compact string for model follow-up turns."""
+    content = getattr(result, "content", None)
+    if content is not None:
+        return json_dumps_safe(content)
+
+    if hasattr(result, "model_dump"):
+        return json_dumps_safe(result.model_dump())
+
+    return json_dumps_safe(result)
 
 
 def compare_values(actual: Any, expected: Any, tolerance: float = 0.01) -> bool:
