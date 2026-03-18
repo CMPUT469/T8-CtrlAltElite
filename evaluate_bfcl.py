@@ -9,6 +9,7 @@ Dataset: gorilla-llm/Berkeley-Function-Calling-Leaderboard
 
 import asyncio
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +19,10 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from openai import OpenAI
 from huggingface_hub import hf_hub_download
-import json
+from dotenv import load_dotenv
+
+load_dotenv()  # Load .env (DATABASE_URL, etc.) before anything else
+
 # Add mcp-client to path
 sys.path.append(str(Path(__file__).parent / "mcp-client"))
 
@@ -308,9 +312,10 @@ async def evaluate_model(
     
     # Start MCP server
     server_params = StdioServerParameters(
-        command=sys.executable,
-        args=[str(Path(__file__).parent / "mcp-server" / "main.py")],
-        env=None
+        command="uv",
+        args=["run", "python", "main.py"],
+        env=dict(os.environ),
+        cwd=str(Path(__file__).parent / "mcp-server")
     )
     
     results = {
@@ -515,14 +520,17 @@ async def evaluate_model(
 
 
 def _compare_params(actual: Dict, expected: Dict) -> bool:
-    """Compare parameter dictionaries, allowing for type coercion."""
-    if set(actual.keys()) != set(expected.keys()):
-        return False
-    
+    """Compare parameter dictionaries, allowing for type coercion and default values.
+
+    Extra keys in actual (not in expected) are allowed — the model may explicitly
+    pass default values that the ground truth omits.
+    """
     for key in expected.keys():
+        if key not in actual:
+            return False
         actual_val = actual[key]
         expected_val = expected[key]
-        
+
         # Handle list comparison
         if isinstance(expected_val, list) and isinstance(actual_val, list):
             if len(actual_val) != len(expected_val):
@@ -533,7 +541,7 @@ def _compare_params(actual: Dict, expected: Dict) -> bool:
         else:
             if not _compare_values(actual_val, expected_val):
                 return False
-    
+
     return True
 
 
@@ -581,12 +589,35 @@ def _compare_values(actual: Any, expected: Any, tolerance: float = 0.01) -> bool
 
 
 def _compare_results(actual: Any, expected: Any) -> bool:
-    """Compare result values with tolerance for floats."""
+    """Compare result values with tolerance for floats and support for nested structures."""
+    # Direct equality
+    if actual == expected:
+        return True
+
+    # Both lists — compare element-wise
+    if isinstance(actual, list) and isinstance(expected, list):
+        if len(actual) != len(expected):
+            return False
+        return all(_compare_results(a, e) for a, e in zip(actual, expected))
+
+    # Both dicts — compare key-value pairs
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        if set(actual.keys()) != set(expected.keys()):
+            return False
+        return all(_compare_results(actual[k], expected[k]) for k in expected)
+
+    # Scalar comparison with type coercion
     return _compare_values(actual, expected)
 
 
 def _extract_result_value(tool_result: Any) -> Any:
-    """Extract the actual result value from MCP tool result."""
+    """Extract the actual result value from MCP tool result.
+
+    Normalizes the value through a JSON round-trip so that Python-specific
+    types (Decimal, datetime, etc.) are converted to JSON-compatible primitives
+    that can be compared against the ground truth.
+    """
+    raw = None
     # Handle different MCP result formats
     if hasattr(tool_result, 'content'):
         content = tool_result.content
@@ -596,16 +627,23 @@ def _extract_result_value(tool_result: Any) -> Any:
                 # Parse JSON from text
                 try:
                     data = json.loads(item.text)
-                    return data.get('result', data)
-                except:
+                    raw = data.get('result', data)
+                except Exception:
                     return item.text
-            return item
-        return content
-    
-    if hasattr(tool_result, 'model_dump'):
-        return tool_result.model_dump()
-    
-    return tool_result
+            else:
+                raw = item
+        else:
+            raw = content
+    elif hasattr(tool_result, 'model_dump'):
+        raw = tool_result.model_dump()
+    else:
+        raw = tool_result
+
+    # JSON round-trip to normalize types (Decimal -> float/int, datetime -> str, etc.)
+    try:
+        return json.loads(json.dumps(raw, default=str))
+    except (TypeError, ValueError):
+        return raw
 
 
 def calculate_metrics(results: Dict) -> Dict:
@@ -688,6 +726,11 @@ def print_report(metrics: Dict, model: str):
     print()
 
 
+def _sanitize_filename(name: str) -> str:
+    """Replace characters invalid in Windows filenames."""
+    return name.replace(":", "_").replace("/", "_").replace("\\", "_")
+
+
 def save_results(results: Dict, metrics: Dict, model: str, output_path: Optional[str] = None):
     """Save evaluation results to JSON file."""
     output = {
@@ -696,7 +739,7 @@ def save_results(results: Dict, metrics: Dict, model: str, output_path: Optional
         'metrics': metrics,
         'raw_results': results
     }
-    
+
     if output_path:
         filename = Path(output_path)
         # Create directory if needed
@@ -746,7 +789,26 @@ async def main():
     if args.synthetic:
         print(f"Loading synthetic tests from: {args.synthetic}")
         with open(args.synthetic, 'r') as f:
-            test_cases = json.load(f)
+            raw = [json.loads(line) for line in f if line.strip()]
+        # Convert raw BFCL format to processed format expected by evaluate_model
+        test_cases = []
+        for ex in raw:
+            question_list = ex.get('question', [[]])
+            query = ''
+            if question_list and isinstance(question_list[0], list):
+                for msg in question_list[0]:
+                    if isinstance(msg, dict) and msg.get('role') == 'user':
+                        query = msg.get('content', '')
+                        break
+            expected_call = ex.get('expected_call', {})
+            test_cases.append({
+                'id': ex.get('id', ''),
+                'query': query,
+                'expected_function': expected_call.get('name', ''),
+                'expected_params': expected_call.get('arguments', {}),
+                'expected_result': ex.get('expected_result'),
+                'category': 'postgres',
+            })
         print(f"Loaded {len(test_cases)} synthetic test cases")
     else:
         print(f"Dataset: {BFCL_DATASET}")
@@ -798,6 +860,11 @@ async def main():
     print_report(metrics, args.model)
     
     # Save results
+    if args.output is None and args.synthetic:
+        dataset_name = Path(args.synthetic).stem
+        safe_model = _sanitize_filename(args.model)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        args.output = f"results/{dataset_name}_{safe_model}_{timestamp}.json"
     save_results(results, metrics, args.model, args.output)
 
     # Log to cloud database (skipped silently if .env not configured)
