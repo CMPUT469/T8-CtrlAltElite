@@ -10,21 +10,24 @@ Dataset: gorilla-llm/Berkeley-Function-Calling-Leaderboard
 import asyncio
 import json
 import os
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datasets import load_dataset
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from openai import OpenAI
 from huggingface_hub import hf_hub_download
 from dotenv import load_dotenv
 
-load_dotenv()  # Load .env (DATABASE_URL, etc.) before anything else
+from inference_backend import (
+    BackendConfig,
+    add_backend_cli_args,
+    create_openai_client,
+    resolve_backend_config,
+    run_chat_completion,
+)
 
-# Add mcp-client to path
-sys.path.append(str(Path(__file__).parent / "mcp-client"))
+load_dotenv()  # Load .env (DATABASE_URL, etc.) before anything else
 
 BFCL_DATASET = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 BFCL_RESULTS_DIR = Path("results") / "bfcl"
@@ -68,13 +71,14 @@ def _maybe_parse_fallback_tool_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _probe_native_tool_support(ollama_client: OpenAI, model: str) -> tuple[bool, Optional[str]]:
+def _probe_native_tool_support(client, config: BackendConfig) -> tuple[bool, Optional[str]]:
     """
     Send a minimal native tool-calling request to check model compatibility.
     """
     try:
-        ollama_client.chat.completions.create(
-            model=model,
+        run_chat_completion(
+            client,
+            config,
             messages=[{"role": "user", "content": "Call the ping tool."}],
             tools=[
                 {
@@ -92,13 +96,13 @@ def _probe_native_tool_support(ollama_client: OpenAI, model: str) -> tuple[bool,
                     },
                 }
             ],
-            tool_choice="auto"
+            tool_choice="auto",
         )
         return True, None
     except Exception as exc:
         message = str(exc)
         if "does not support tools" in message.lower():
-            return False, NATIVE_TOOLS_INCOMPATIBLE_MSG.format(model=model)
+            return False, NATIVE_TOOLS_INCOMPATIBLE_MSG.format(model=config.model)
         return True, None
 
 
@@ -282,7 +286,7 @@ def filter_math_tests(data, category: str = None) -> List[Dict]:
 
 
 async def evaluate_model(
-    model: str,
+    backend_config: BackendConfig,
     test_cases: List[Dict],
     limit: Optional[int] = None,
     num_distractors: Optional[int] = None,
@@ -298,7 +302,7 @@ async def evaluate_model(
         num_distractors: Number of distractor tools (0=oracle, None=all tools)
     """
     print(f"\n{'='*60}")
-    print(f"Evaluating {model} on BFCL Math Tools")
+    print(f"Evaluating {backend_config.model} on BFCL Math Tools")
     print(f"{'='*60}\n")
     
     if limit:
@@ -307,8 +311,7 @@ async def evaluate_model(
     else:
         print(f"Running {len(test_cases)} test cases\n")
     
-    # Initialize Ollama client (OpenAI-compatible)
-    ollama_client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+    client = create_openai_client(backend_config)
     
     # Start MCP server
     server_params = StdioServerParameters(
@@ -319,7 +322,7 @@ async def evaluate_model(
     )
     
     results = {
-        'model': model,
+        'model': backend_config.model,
         'timestamp': datetime.now().isoformat(),
         'total_tests': len(test_cases),
         'correct_function': 0,
@@ -338,11 +341,11 @@ async def evaluate_model(
             await session.initialize()
 
             if not allow_fallback:
-                supports_native_tools, compatibility_message = _probe_native_tool_support(ollama_client, model)
+                supports_native_tools, compatibility_message = _probe_native_tool_support(client, backend_config)
                 results['model_native_tools_supported'] = supports_native_tools
                 if not supports_native_tools:
                     print(compatibility_message)
-                    return _build_incompatible_results(model, test_cases, compatibility_message)
+                    return _build_incompatible_results(backend_config.model, test_cases, compatibility_message)
             
             # Get available tools
             mcp_tools = await session.list_tools()
@@ -422,11 +425,12 @@ async def evaluate_model(
                             '{"tool":"<tool_name>","args":{...}}'
                         )
                     
-                    response = ollama_client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        tools=openai_tools,
-                        tool_choice="auto"
+                    response = run_chat_completion(
+                        client,
+                        backend_config,
+                        messages,
+                        openai_tools,
+                        tool_choice="auto",
                     )
                     
                     message = response.choices[0].message
@@ -770,6 +774,7 @@ async def main():
     parser.add_argument("--synthetic", type=str, default=None, help="Use synthetic test file instead of BFCL")
     parser.add_argument("--oracle-mode", action="store_true", help="Oracle mode: only provide the relevant tool (no distractors)")
     parser.add_argument("--num-distractors", type=int, default=None, help="Number of distractor tools to include (0 = oracle mode)")
+    add_backend_cli_args(parser)
     parser.add_argument(
         "--allow_fallback",
         action="store_true",
@@ -782,6 +787,14 @@ async def main():
     print("BFCL Evaluation - Berkeley Function Calling Leaderboard")
     print("="*60)
     print(f"Model: {args.model}")
+    backend_config = resolve_backend_config(
+        model=args.model,
+        provider=args.provider,
+        base_url=args.base_url,
+        api_key=args.api_key,
+    )
+    print(f"Provider: {backend_config.provider}")
+    print(f"Base URL: {backend_config.openai_base_url}")
     print(f"Category: {args.category}")
     print()
     
@@ -846,7 +859,7 @@ async def main():
     # Run evaluation
     num_distractors = args.num_distractors if args.num_distractors is not None else (0 if args.oracle_mode else None)
     results = await evaluate_model(
-        args.model,
+        backend_config,
         test_cases,
         args.limit,
         num_distractors=num_distractors,

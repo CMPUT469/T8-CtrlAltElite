@@ -19,7 +19,13 @@ from typing import Dict, List, Optional
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from openai import OpenAI
+from inference_backend import (
+    BackendConfig,
+    add_backend_cli_args,
+    create_openai_client,
+    resolve_backend_config,
+    run_chat_completion,
+)
 
 # Import shared evaluation framework
 from evaluation_framework import (
@@ -39,7 +45,7 @@ RESULTS_DIR = Path("results") / "jefferson"
 
 
 async def run_jefferson_evaluation(
-    model: str,
+    backend_config: BackendConfig,
     test_cases_path: Path,
     output_path: Path,
     limit: Optional[int] = None,
@@ -58,8 +64,10 @@ async def run_jefferson_evaluation(
     print("=" * 60)
     print("Jefferson Stats Evaluation")
     print("=" * 60)
-    print(f"Model: {model}")
+    print(f"Model: {backend_config.model}")
     print(f"Test Cases: {test_cases_path}")
+    print(f"Provider: {backend_config.provider}")
+    print(f"Base URL: {backend_config.openai_base_url}")
     print()
     
     # Load test cases
@@ -71,8 +79,7 @@ async def run_jefferson_evaluation(
     
     print(f"Loaded {len(all_tests)} test cases\n")
     
-    # Initialize Ollama client
-    ollama_client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+    client = create_openai_client(backend_config)
     
     # Connect to MCP server
     server_params = StdioServerParameters(
@@ -107,7 +114,7 @@ async def run_jefferson_evaluation(
             
             # Initialize results
             results = {
-                'model': model,
+                'model': backend_config.model,
                 'timestamp': datetime.now().isoformat(),
                 'total_tests': len(all_tests),
                 'correct_function': 0,
@@ -151,11 +158,12 @@ async def run_jefferson_evaluation(
                             'respond with ONLY valid JSON: {"tool":"<tool_name>","args":{...}}'
                         )
                     
-                    response = ollama_client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        tools=all_openai_tools,
-                        tool_choice="auto"
+                    response = run_chat_completion(
+                        client,
+                        backend_config,
+                        messages,
+                        all_openai_tools,
+                        tool_choice="auto",
                     )
                     
                     message = response.choices[0].message
@@ -240,10 +248,10 @@ async def run_jefferson_evaluation(
             
             # Print report
             print()
-            print_report(metrics, model)
+            print_report(metrics, backend_config.model)
             
             # Save results
-            save_results(output_path, model, metrics, results)
+            save_results(output_path, backend_config.model, metrics, results)
             print(f"\n✅ Results saved to: {output_path}")
 
 
@@ -272,6 +280,7 @@ def main():
         type=int,
         help="Limit number of test cases"
     )
+    add_backend_cli_args(parser)
     parser.add_argument(
         "--allow-fallback",
         action="store_true",
@@ -285,10 +294,17 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         model_safe = args.model.replace(":", "_").replace("/", "_")
         args.output = RESULTS_DIR / f"{model_safe}_{timestamp}.json"
-    
+
+    backend_config = resolve_backend_config(
+        model=args.model,
+        provider=args.provider,
+        base_url=args.base_url,
+        api_key=args.api_key,
+    )
+
     # Run evaluation
     asyncio.run(run_jefferson_evaluation(
-        model=args.model,
+        backend_config=backend_config,
         test_cases_path=args.test_cases,
         output_path=args.output,
         limit=args.limit,

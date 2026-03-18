@@ -33,14 +33,24 @@ import asyncio
 import json
 import sys
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
-from openai import OpenAI
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from inference_backend import (
+    BackendConfig,
+    add_backend_cli_args,
+    create_openai_client,
+    resolve_backend_config,
+    run_chat_completion,
+)
 
 
 def _json_dumps_safe(value: Any) -> str:
@@ -116,34 +126,24 @@ def _maybe_parse_fallback_tool_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-@dataclass(frozen=True)
-class OllamaConfig:
-    model: str
-    base_url: str  # should end with /v1 for OpenAI-compat endpoints
+class BackendChatModel:
+    """Thin wrapper around the shared OpenAI-compatible backend helper."""
 
-
-class OllamaChatModel:
-    """
-    Uses OpenAI Python SDK pointed to Ollama's OpenAI-compatible API.
-
-    By default, Ollama exposes OpenAI-compatible endpoints at:
-      http://localhost:11434/v1
-    """
-
-    def __init__(self, config: OllamaConfig):
+    def __init__(self, config: BackendConfig):
         self._config = config
-        self._client = OpenAI(base_url=config.base_url, api_key="ollama")  # dummy key; Ollama ignores it
+        self._client = create_openai_client(config)
 
     def chat(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
     ):
-        return self._client.chat.completions.create(
-            model=self._config.model,
-            messages=messages,
-            tools=tools,
-            tool_choice="auto" if tools else None,
+        return run_chat_completion(
+            self._client,
+            self._config,
+            messages,
+            tools,
+            tool_choice="auto",
         )
 
 
@@ -179,8 +179,8 @@ class McpConnector:
 
 
 
-class UniversalOllamaMcpClient:
-    def __init__(self, mcp: McpConnector, llm: OllamaChatModel):
+class UniversalMcpClient:
+    def __init__(self, mcp: McpConnector, llm: BackendChatModel):
         if mcp.session is None:
             raise ValueError("MCP session is not initialized.")
         self._mcp = mcp
@@ -267,7 +267,7 @@ class UniversalOllamaMcpClient:
         return raw_text
 
     async def chat_loop(self) -> None:
-        print("\nUniversal Ollama MCP Client started. Type 'quit' to exit.")
+        print("\nUniversal MCP Client started. Type 'quit' to exit.")
         while True:
             query = input("\nQuery: ").strip()
             if query.lower() == "quit":
@@ -283,7 +283,7 @@ class UniversalOllamaMcpClient:
 # CLI / Entrypoint
 # -----------------------------
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Universal MCP client powered by local Ollama LLMs.")
+    parser = argparse.ArgumentParser(description="Universal MCP client powered by an OpenAI-compatible backend.")
     parser.add_argument(
         "--transport",
         choices=["stdio", "http"],
@@ -303,12 +303,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         required=True,
-        help="Ollama model name (e.g., qwen2.5, llama3.1, mistral, gpt-oss).",
+        help="Model name (e.g., qwen2.5, llama3.1, mistral, gpt-oss).",
     )
+    add_backend_cli_args(parser)
     parser.add_argument(
         "--ollama-url",
-        default="http://localhost:11434",
-        help="Base Ollama host URL (default: http://localhost:11434).",
+        default=None,
+        help="Backward-compatible alias for --base-url when using provider=ollama.",
     )
     return parser.parse_args()
 
@@ -316,9 +317,13 @@ def _parse_args() -> argparse.Namespace:
 async def _async_main() -> None:
     args = _parse_args()
 
-    # Ollama OpenAI-compatible base URL
-    ollama_base_url = args.ollama_url.rstrip("/") + "/v1"
-    llm = OllamaChatModel(OllamaConfig(model=args.model, base_url=ollama_base_url))
+    backend_config = resolve_backend_config(
+        model=args.model,
+        provider=args.provider,
+        base_url=args.base_url or args.ollama_url,
+        api_key=args.api_key,
+    )
+    llm = BackendChatModel(backend_config)
 
     mcp = McpConnector()
     try:
@@ -334,9 +339,11 @@ async def _async_main() -> None:
         assert mcp.session is not None
         tools = (await mcp.session.list_tools()).tools
         print("Connected to MCP server. Tools:", [t.name for t in tools])
-        print("Using Ollama model:", args.model)
+        print("Using backend:", backend_config.provider)
+        print("Base URL:", backend_config.openai_base_url)
+        print("Model:", backend_config.model)
 
-        client = UniversalOllamaMcpClient(mcp=mcp, llm=llm)
+        client = UniversalMcpClient(mcp=mcp, llm=llm)
         await client.chat_loop()
     finally:
         await mcp.close()

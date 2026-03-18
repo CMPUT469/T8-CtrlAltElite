@@ -16,29 +16,37 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from openai import OpenAI
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from inference_backend import (
+    BackendConfig,
+    add_backend_cli_args,
+    create_openai_client,
+    resolve_backend_config,
+    run_chat_completion,
+)
 
-def test_model_simple(model: str, prompt: str):
+
+def test_model_simple(backend_config: BackendConfig, prompt: str):
     """Test model with simple prompt (no tools)"""
     print("\n" + "=" * 60)
-    print(f"Testing Model: {model}")
+    print(f"Testing Model: {backend_config.model}")
     print("=" * 60)
     print(f"\n📝 Your Prompt:\n{prompt}\n")
     print("🤖 Model Response:")
     print("-" * 60)
     
-    ollama_client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+    client = create_openai_client(backend_config)
     
     try:
-        response = ollama_client.chat.completions.create(
-            model=model,
-            messages=[
+        response = run_chat_completion(
+            client,
+            backend_config,
+            [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt}
-            ]
+            ],
         )
         
         answer = response.choices[0].message.content
@@ -53,10 +61,10 @@ def test_model_simple(model: str, prompt: str):
     return True
 
 
-async def test_model_with_tools(model: str, prompt: str, use_fallback: bool = False):
+async def test_model_with_tools(backend_config: BackendConfig, prompt: str, use_fallback: bool = False):
     """Test model with MCP tools available"""
     print("\n" + "=" * 60)
-    print(f"Testing Model with Tools: {model}")
+    print(f"Testing Model with Tools: {backend_config.model}")
     print("=" * 60)
     print(f"\n📝 Your Prompt:\n{prompt}\n")
     
@@ -95,7 +103,7 @@ async def test_model_with_tools(model: str, prompt: str, use_fallback: bool = Fa
             print("-" * 60)
             
             # Call model
-            ollama_client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+            client = create_openai_client(backend_config)
             
             messages = [
                 {"role": "system", "content": "You are a helpful assistant. Use the provided tools when needed."},
@@ -109,11 +117,12 @@ async def test_model_with_tools(model: str, prompt: str, use_fallback: bool = Fa
                 )
             
             try:
-                response = ollama_client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    tools=openai_tools,
-                    tool_choice="auto"
+                response = run_chat_completion(
+                    client,
+                    backend_config,
+                    messages,
+                    openai_tools,
+                    tool_choice="auto",
                 )
                 
                 message = response.choices[0].message
@@ -183,10 +192,10 @@ async def test_model_with_tools(model: str, prompt: str, use_fallback: bool = Fa
     return True
 
 
-def interactive_mode(model: str, with_tools: bool = False, use_fallback: bool = False):
+def interactive_mode(backend_config: BackendConfig, with_tools: bool = False, use_fallback: bool = False):
     """Interactive prompt loop"""
     print("\n" + "=" * 60)
-    print(f"🎯 Interactive Mode - {model}")
+    print(f"🎯 Interactive Mode - {backend_config.model}")
     print("=" * 60)
     print("Enter your prompts below. Type 'quit' or 'exit' to stop.")
     print("=" * 60 + "\n")
@@ -203,9 +212,9 @@ def interactive_mode(model: str, with_tools: bool = False, use_fallback: bool = 
                 continue
             
             if with_tools:
-                asyncio.run(test_model_with_tools(model, prompt, use_fallback))
+                asyncio.run(test_model_with_tools(backend_config, prompt, use_fallback))
             else:
-                test_model_simple(model, prompt)
+                test_model_simple(backend_config, prompt)
         
         except KeyboardInterrupt:
             print("\n\n👋 Goodbye!\n")
@@ -256,18 +265,25 @@ Examples:
         action="store_true",
         help="Enable fallback JSON parsing for non-native tool models"
     )
+    add_backend_cli_args(parser)
     
     args = parser.parse_args()
+    backend_config = resolve_backend_config(
+        model=args.model,
+        provider=args.provider,
+        base_url=args.base_url,
+        api_key=args.api_key,
+    )
     
     # Single prompt mode
     if args.prompt:
         if args.with_tools:
-            asyncio.run(test_model_with_tools(args.model, args.prompt, args.fallback))
+            asyncio.run(test_model_with_tools(backend_config, args.prompt, args.fallback))
         else:
-            test_model_simple(args.model, args.prompt)
+            test_model_simple(backend_config, args.prompt)
     else:
         # Interactive mode
-        interactive_mode(args.model, args.with_tools, args.fallback)
+        interactive_mode(backend_config, args.with_tools, args.fallback)
 
 
 if __name__ == "__main__":
