@@ -12,6 +12,7 @@ Requires .env with:
 If credentials are missing, logging is silently skipped and local JSON still works.
 """
 
+import json
 import os
 from datetime import datetime
 from typing import Optional
@@ -93,13 +94,18 @@ def log_run(
         if details:
             detail_rows = []
             for d in details:
+                # Keep actual_result as-is (jsonb) — no float coercion
                 actual_result = d.get("actual_result")
-                # Coerce to float if possible; store None otherwise
                 if actual_result is not None:
                     try:
-                        actual_result = float(actual_result)
+                        json.dumps(actual_result)
                     except (TypeError, ValueError):
-                        actual_result = None
+                        actual_result = str(actual_result)
+
+                # Wrap raw string incorrect_output in a dict for jsonb
+                incorrect_output = d.get("incorrect_output")
+                if isinstance(incorrect_output, str):
+                    incorrect_output = {"raw_text": incorrect_output}
 
                 detail_rows.append({
                     "run_id": run_id,
@@ -110,10 +116,14 @@ def log_run(
                     "expected_params": d.get("expected_params"),
                     "actual_params": d.get("actual_params"),
                     "actual_result": actual_result,
+                    "expected_result": d.get("expected_result"),
                     "correct_function": d.get("correct_function"),
                     "correct_params": d.get("correct_params"),
                     "correct_result": d.get("correct_result"),
                     "error": d.get("error"),
+                    "incorrect_output": incorrect_output,
+                    "raw_model_output": d.get("raw_model_output"),
+                    "tool_result": d.get("tool_result"),
                 })
 
             client.table("test_details").insert(detail_rows).execute()
