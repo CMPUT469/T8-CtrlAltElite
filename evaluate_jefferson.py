@@ -5,7 +5,7 @@ Jefferson Stats Evaluation Script
 Evaluates LLM function calling on statistical analysis tools from JeffersonStatsMCP.
 Uses outcome-based evaluation E(O, Ô) ∈ {0, 1} following MCPVerse methodology.
 
-Dataset: stats_test_cases.json (18 statistical functions)
+Dataset: stats_test_cases.jsonl (18 statistical functions)
 Tools: 18 statistical analysis functions (basic, advanced, hypothesis, analysis)
 """
 
@@ -41,7 +41,7 @@ from evaluation_framework import (
 
 # Configuration
 MCP_SERVER_PATH = Path(__file__).parent / "mcp-server" / "main.py"
-TEST_CASES_PATH = Path(__file__).parent / "stats_test_cases.json"
+TEST_CASES_PATH = Path(__file__).parent / "stats_test_cases.jsonl"
 RESULTS_DIR = Path("results") / "jefferson"
 
 
@@ -73,7 +73,10 @@ async def run_jefferson_evaluation(
     
     # Load test cases
     with open(test_cases_path) as f:
-        all_tests = json.load(f)
+        if test_cases_path.suffix == ".jsonl":
+            all_tests = [json.loads(line) for line in f if line.strip()]
+        else:
+            all_tests = json.load(f)
     
     if limit:
         all_tests = all_tests[:limit]
@@ -259,7 +262,7 @@ def main():
         "--test-cases",
         type=Path,
         default=TEST_CASES_PATH,
-        help="Path to test cases JSON file"
+        help="Path to test cases JSONL file"
     )
     parser.add_argument(
         "--output",

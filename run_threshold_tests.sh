@@ -3,8 +3,12 @@
 # Threshold Testing Script for qwen2.5:7b
 # Tests model performance with different numbers of available tools
 
-cd /Users/pragyadas/CMPUT469/T8-CtrlAltElite
-source mcp-client/.venv/bin/activate
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+if [ -f "mcp-client/.venv/bin/activate" ]; then
+  source "mcp-client/.venv/bin/activate"
+fi
 
 echo "Starting threshold tests for qwen2.5:7b..."
 echo "Testing with different tool counts to find degradation point"

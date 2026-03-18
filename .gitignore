@@ -13,6 +13,9 @@ venv/
 env/
 ENV/
 .venv*
+mcp-client/.venv/
+mcp-server/.venv/
+.venv-eval/
 
 # IDEs
 .vscode/
@@ -35,12 +38,21 @@ bfcl_results_*
 # Logs
 *.log
 
+# Tooling caches
+.uv-cache/
+.uv-cache-root/
+mcp-client/.uv-cache/
+mcp-server/.uv-cache/
+
 # Environment variables
 .env
 .env.local
 
 # Jupyter Notebook
 .ipynb_checkpoints
+
+# Python caches
+**/__pycache__/
 
 # Project specific
 gorilla_mcp_tools.json
