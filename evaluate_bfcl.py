@@ -27,6 +27,116 @@ load_dotenv()  # Load .env (DATABASE_URL, etc.) before anything else
 sys.path.append(str(Path(__file__).parent / "mcp-client"))
 
 BFCL_DATASET = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
+BFCL_RESULTS_DIR = Path("results") / "bfcl"
+NATIVE_TOOLS_INCOMPATIBLE_MSG = (
+    "Model {model} is not native tool-calling compatible under Ollama OpenAI endpoint. "
+    "Use a tools-capable model (Tools category: Llama 3.1, etc.)."
+)
+
+
+def _maybe_parse_fallback_tool_json(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Parse fallback JSON for models that answer in text instead of native tool_calls.
+    Expected format:
+      {"tool":"<name>","args":{...}}
+    """
+    if not text:
+        return None
+
+    candidate = text.strip()
+
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if len(lines) >= 3:
+            candidate = "\n".join(lines[1:-1]).strip()
+        else:
+            candidate = candidate.strip("`").strip()
+        if candidate.startswith("json"):
+            candidate = candidate[4:].strip()
+
+    if not (candidate.startswith("{") and candidate.endswith("}")):
+        return None
+
+    try:
+        payload = json.loads(candidate)
+    except Exception:
+        return None
+
+    if isinstance(payload, dict) and "tool" in payload and isinstance(payload.get("args"), dict):
+        return payload
+
+    return None
+
+
+def _probe_native_tool_support(ollama_client: OpenAI, model: str) -> tuple[bool, Optional[str]]:
+    """
+    Send a minimal native tool-calling request to check model compatibility.
+    """
+    try:
+        ollama_client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Call the ping tool."}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "ping",
+                        "description": "Return a simple ping payload.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "value": {"type": "string"}
+                            },
+                            "required": ["value"]
+                        },
+                    },
+                }
+            ],
+            tool_choice="auto"
+        )
+        return True, None
+    except Exception as exc:
+        message = str(exc)
+        if "does not support tools" in message.lower():
+            return False, NATIVE_TOOLS_INCOMPATIBLE_MSG.format(model=model)
+        return True, None
+
+
+def _build_incompatible_results(model: str, test_cases: List[Dict], message: str) -> Dict:
+    """Build a BFCL result payload when model does not support native tool calling."""
+    timestamp = datetime.now().isoformat()
+    details = []
+    for test in test_cases:
+        details.append({
+            'test_id': test['id'],
+            'query': test['query'],
+            'expected_function': test['expected_function'],
+            'expected_params': test['expected_params'],
+            'actual_function': None,
+            'actual_params': None,
+            'actual_result': None,
+            'correct_function': False,
+            'correct_params': False,
+            'correct_result': False,
+            'error': message,
+            'incorrect_output': None,
+            'call_source': 'none',
+        })
+
+    return {
+        'model': model,
+        'timestamp': timestamp,
+        'total_tests': len(test_cases),
+        'correct_function': 0,
+        'correct_params': 0,
+        'correct_result': 0,
+        'no_tool_call': len(test_cases),
+        'wrong_tool': 0,
+        'wrong_params': 0,
+        'details': details,
+        'model_native_tools_supported': False,
+        'allow_fallback': False,
+    }
 
 
 def download_bfcl_dataset(category: str = "simple"):
@@ -171,7 +281,13 @@ def filter_math_tests(data, category: str = None) -> List[Dict]:
     return processed_tests
 
 
-async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int] = None, num_distractors: Optional[int] = None):
+async def evaluate_model(
+    model: str,
+    test_cases: List[Dict],
+    limit: Optional[int] = None,
+    num_distractors: Optional[int] = None,
+    allow_fallback: bool = False,
+):
     """
     Run BFCL test cases against the model and calculate F1/TSR.
     
@@ -212,12 +328,21 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
         'no_tool_call': 0,
         'wrong_tool': 0,
         'wrong_params': 0,
-        'details': []
+        'details': [],
+        'model_native_tools_supported': True,
+        'allow_fallback': allow_fallback,
     }
     
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
+
+            if not allow_fallback:
+                supports_native_tools, compatibility_message = _probe_native_tool_support(ollama_client, model)
+                results['model_native_tools_supported'] = supports_native_tools
+                if not supports_native_tools:
+                    print(compatibility_message)
+                    return _build_incompatible_results(model, test_cases, compatibility_message)
             
             # Get available tools
             mcp_tools = await session.list_tools()
@@ -260,7 +385,8 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
                     'correct_params': False,
                     'correct_result': False,
                     'error': None,
-                    'incorrect_output': None  # Captures actual model output when there's an error
+                    'incorrect_output': None,  # Captures actual model output when there's an error
+                    'call_source': 'none',
                 }
                 
                 try:
@@ -288,6 +414,13 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
                         {"role": "system", "content": "You are a helpful assistant. Use the provided tools when needed."},
                         {"role": "user", "content": test['query']}
                     ]
+                    if allow_fallback:
+                        messages[0]["content"] = (
+                            "You are a helpful assistant. Use the provided tools when needed.\n\n"
+                            "If you want to call a tool but cannot emit a native tool call, "
+                            "respond with ONLY valid JSON in this exact format:\n"
+                            '{"tool":"<tool_name>","args":{...}}'
+                        )
                     
                     response = ollama_client.chat.completions.create(
                         model=model,
@@ -304,62 +437,70 @@ async def evaluate_model(model: str, test_cases: List[Dict], limit: Optional[int
                         tool_call = tool_calls[0]
                         actual_function = tool_call.function.name
                         actual_params = json.loads(tool_call.function.arguments or "{}")
-                        
+                        test_result['call_source'] = 'native'
+                    elif allow_fallback:
+                        raw_text = (message.content or "").strip() if hasattr(message, 'content') else ""
+                        fallback = _maybe_parse_fallback_tool_json(raw_text)
+                        if fallback:
+                            actual_function = str(fallback["tool"])
+                            actual_params = fallback["args"]
+                            test_result['incorrect_output'] = raw_text
+                            test_result['call_source'] = 'fallback'
+                        else:
+                            actual_function = None
+                            actual_params = None
+                    else:
+                        actual_function = None
+                        actual_params = None
+
+                    if actual_function is not None:
                         test_result['actual_function'] = actual_function
                         test_result['actual_params'] = actual_params
-                        
-                        # Check function correctness
-                        if actual_function == test['expected_function']:
-                            test_result['correct_function'] = True
-                            results['correct_function'] += 1
+
+                        # Outcome-based evaluation: E(O, Ô) ∈ {0, 1}
+                        # Execute tool call and compare outcome with ground truth
+                        try:
+                            tool_result = await session.call_tool(actual_function, actual_params)
+                            result_content = _extract_result_value(tool_result)
+                            test_result['actual_result'] = result_content
+
+                            # Get expected outcome from ground truth
+                            expected_outcome = test.get('expected_result')
                             
-                            # Check parameter correctness
-                            params_match = _compare_params(actual_params, test['expected_params'])
-                            if params_match:
-                                test_result['correct_params'] = True
-                                results['correct_params'] += 1
-                                
-                                # Execute tool and check result
-                                try:
-                                    tool_result = await session.call_tool(actual_function, actual_params)
-                                    result_content = _extract_result_value(tool_result)
-                                    test_result['actual_result'] = result_content
-                                    
-                                    # Compare with expected result
-                                    if test.get('expected_result') is not None:
-                                        if _compare_results(result_content, test['expected_result']):
-                                            test_result['correct_result'] = True
-                                            results['correct_result'] += 1
-                                        else:
-                                            test_result['incorrect_output'] = {
-                                                'actual_result': result_content,
-                                                'expected_result': test['expected_result'],
-                                                'result_mismatch': True
-                                            }
-                                    else:
-                                        # If no expected result, count as correct if executed
-                                        test_result['correct_result'] = True
-                                        results['correct_result'] += 1
-                                        
-                                except Exception as e:
-                                    test_result['error'] = f"Tool execution failed: {str(e)}"
+                            # E(O, Ô): Binary evaluation based on outcome match
+                            outcome_matches = False
+                            if expected_outcome is not None:
+                                outcome_matches = _compare_results(result_content, expected_outcome)
+                            
+                            # Binary score: 1 if outcomes match, 0 otherwise
+                            if outcome_matches:
+                                test_result['correct_result'] = True
+                                results['correct_result'] += 1
+                                # Track auxiliary metrics for analysis
+                                if actual_function == test['expected_function']:
+                                    test_result['correct_function'] = True
+                                    results['correct_function'] += 1
+                                if _compare_params(actual_params, test['expected_params']):
+                                    test_result['correct_params'] = True
+                                    results['correct_params'] += 1
                             else:
-                                results['wrong_params'] += 1
-                                test_result['incorrect_output'] = {
-                                    'called_function': actual_function,
-                                    'actual_params': actual_params,
-                                    'expected_params': test['expected_params'],
-                                    'param_mismatch': True
+                                # Outcome mismatch - E(O, Ô) = 0
+                                test_result['correct_result'] = False
+                                test_result['outcome_mismatch'] = {
+                                    'expected': expected_outcome,
+                                    'actual': result_content,
+                                    'function_used': actual_function,
+                                    'params_used': actual_params
                                 }
-                        else:
-                            results['wrong_tool'] += 1
-                            test_result['incorrect_output'] = {
-                                'called_function': actual_function,
-                                'called_params': actual_params,
-                                'expected_function': test['expected_function']
-                            }
+
+                        except Exception as e:
+                            # Execution failure - E(O, Ô) = 0
+                            test_result['correct_result'] = False
+                            test_result['error'] = f"Tool execution failed: {str(e)}"
+                            results['no_tool_call'] += 1
                     else:
-                        # No tool call made
+                        # No tool call made - E(O, Ô) = 0
+                        test_result['correct_result'] = False
                         results['no_tool_call'] += 1
                         test_result['error'] = "Model did not make a tool call"
                         # Capture the actual text content the model generated
@@ -404,19 +545,45 @@ def _compare_params(actual: Dict, expected: Dict) -> bool:
     return True
 
 
-def _compare_values(actual: Any, expected: Any) -> bool:
-    """Compare two values with type coercion."""
+def _compare_values(actual: Any, expected: Any, tolerance: float = 0.01) -> bool:
+    """Compare two values with type coercion and tolerance for numerical values."""
     # Try direct comparison
     if actual == expected:
         return True
+    
+    # Handle dict vs primitive comparison (e.g., {"result": 1.803} vs 1.803)
+    if isinstance(expected, dict) and not isinstance(actual, dict):
+        # Extract value from dict (try common keys)
+        for key in ['result', 'value', 'output']:
+            if key in expected:
+                expected = expected[key]
+                break
+    elif isinstance(actual, dict) and not isinstance(expected, dict):
+        # Extract value from dict
+        for key in ['result', 'value', 'output']:
+            if key in actual:
+                actual = actual[key]
+                break
     
     # Try numeric comparison with tolerance
     try:
         actual_num = float(actual)
         expected_num = float(expected)
-        return abs(actual_num - expected_num) < 0.01
+        return abs(actual_num - expected_num) < tolerance
     except (ValueError, TypeError):
         pass
+    
+    # Handle list/array comparison
+    if isinstance(actual, (list, tuple)) and isinstance(expected, (list, tuple)):
+        if len(actual) != len(expected):
+            return False
+        return all(_compare_values(a, e, tolerance) for a, e in zip(actual, expected))
+    
+    # Handle dict comparison recursively
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        if set(actual.keys()) != set(expected.keys()):
+            return False
+        return all(_compare_values(actual[k], expected[k], tolerance) for k in actual.keys())
     
     return False
 
@@ -481,43 +648,45 @@ def _extract_result_value(tool_result: Any) -> Any:
 
 def calculate_metrics(results: Dict) -> Dict:
     """
-    Calculate F1 score and TSR from evaluation results.
+    Calculate evaluation metrics based on outcome-based evaluation: E(O, Ô) ∈ {0, 1}
     
-    F1 Score: Harmonic mean of precision and recall
-    TSR (Tool Selection Rate): Percentage of correct tool selections
+    Primary Metric:
+    - Outcome Accuracy: Percentage of tasks where final outcome matches ground truth
+    
+    Auxiliary Metrics (for analysis):
+    - Function Selection: Which function was chosen
+    - Parameter Accuracy: Correctness of parameters
+    - Precision/Recall: Traditional metrics
     """
     total = results['total_tests']
+    correct_result = results['correct_result']  # E(O, Ô) = 1 count
     correct_function = results['correct_function']
     correct_params = results['correct_params']
-    correct_result = results['correct_result']
     
-    # Tool Selection Rate (TSR)
+    # Primary metric: Outcome-based success rate
+    outcome_accuracy = (correct_result / total * 100) if total > 0 else 0
+    
+    # Auxiliary metrics for trajectory analysis
     tsr_function = (correct_function / total * 100) if total > 0 else 0
     tsr_params = (correct_params / total * 100) if total > 0 else 0
-    tsr_result = (correct_result / total * 100) if total > 0 else 0
     
-    # F1 Score (for function selection)
-    # Precision: correct tools / tools called
+    # Traditional F1/Precision/Recall (kept for comparison)
     tools_called = total - results['no_tool_call']
-    precision = (correct_function / tools_called * 100) if tools_called > 0 else 0
-    
-    # Recall: correct tools / total tests
-    recall = (correct_function / total * 100) if total > 0 else 0
-    
-    # F1 = 2 * (P * R) / (P + R)
+    precision = (correct_result / tools_called * 100) if tools_called > 0 else 0
+    recall = (correct_result / total * 100) if total > 0 else 0
     f1_score = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
     
     metrics = {
+        'outcome_accuracy': round(outcome_accuracy, 2),  # Primary: E(O, Ô)
         'f1_score': round(f1_score, 2),
         'precision': round(precision, 2),
         'recall': round(recall, 2),
         'tsr_function_selection': round(tsr_function, 2),
         'tsr_parameter_accuracy': round(tsr_params, 2),
-        'tsr_result_accuracy': round(tsr_result, 2),
         'total_tests': total,
+        'correct_outcome': correct_result,  # E(O, Ô) = 1 count
         'correct_function': correct_function,
         'correct_params': correct_params,
-        'correct_result': correct_result,
         'no_tool_call': results['no_tool_call'],
         'wrong_tool': results['wrong_tool']
     }
@@ -526,28 +695,32 @@ def calculate_metrics(results: Dict) -> Dict:
 
 
 def print_report(metrics: Dict, model: str):
-    """Print evaluation report."""
+    """Print evaluation report with outcome-based metrics."""
     print(f"\n{'='*60}")
-    print(f"BFCL Evaluation Results - {model}")
+    print(f"Outcome-Based Evaluation Results - {model}")
     print(f"{'='*60}\n")
     
-    print(f"Overall Metrics:")
+    print(f"Primary Metric (E(O, Ô)):")
+    print(f"  Outcome Accuracy:      {metrics['outcome_accuracy']}%")
+    print(f"  Tasks Completed:       {metrics['correct_outcome']}/{metrics['total_tests']}")
+    print()
+    
+    print(f"Auxiliary Metrics (Trajectory Analysis):")
+    print(f"  Function Selection:    {metrics['tsr_function_selection']}%")
+    print(f"  Parameter Accuracy:    {metrics['tsr_parameter_accuracy']}%")
+    print()
+    
+    print(f"Traditional Metrics:")
     print(f"  F1 Score:              {metrics['f1_score']}%")
     print(f"  Precision:             {metrics['precision']}%")
     print(f"  Recall:                {metrics['recall']}%")
     print()
     
-    print(f"Tool Selection Rate (TSR):")
-    print(f"  Function Selection:    {metrics['tsr_function_selection']}%")
-    print(f"  Parameter Accuracy:    {metrics['tsr_parameter_accuracy']}%")
-    print(f"  Result Accuracy:       {metrics['tsr_result_accuracy']}%")
-    print()
-    
     print(f"Breakdown:")
     print(f"  Total Tests:           {metrics['total_tests']}")
+    print(f"  Correct Outcome:       {metrics['correct_outcome']}")
     print(f"  Correct Function:      {metrics['correct_function']}")
     print(f"  Correct Params:        {metrics['correct_params']}")
-    print(f"  Correct Result:        {metrics['correct_result']}")
     print(f"  No Tool Call:          {metrics['no_tool_call']}")
     print(f"  Wrong Tool:            {metrics['wrong_tool']}")
     print()
@@ -568,16 +741,17 @@ def save_results(results: Dict, metrics: Dict, model: str, output_path: Optional
     }
 
     if output_path:
-        filename = output_path
+        filename = Path(output_path)
         # Create directory if needed
-        Path(filename).parent.mkdir(parents=True, exist_ok=True)
+        filename.parent.mkdir(parents=True, exist_ok=True)
     else:
-        safe_model = _sanitize_filename(model)
-        filename = f"bfcl_results_{safe_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-
-    with open(filename, 'w', encoding='utf-8') as f:
-        json.dump(output, f, indent=2, default=str)
-
+        safe_model = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in model)
+        filename = BFCL_RESULTS_DIR / f"bfcl_results_{safe_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filename.parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(filename, 'w') as f:
+        json.dump(output, f, indent=2)
+    
     print(f"Results saved to: {filename}")
 
 
@@ -596,6 +770,11 @@ async def main():
     parser.add_argument("--synthetic", type=str, default=None, help="Use synthetic test file instead of BFCL")
     parser.add_argument("--oracle-mode", action="store_true", help="Oracle mode: only provide the relevant tool (no distractors)")
     parser.add_argument("--num-distractors", type=int, default=None, help="Number of distractor tools to include (0 = oracle mode)")
+    parser.add_argument(
+        "--allow_fallback",
+        action="store_true",
+        help="Allow text-based fallback JSON tool requests. Default BFCL mode is native tool-calling only.",
+    )
     
     args = parser.parse_args()
     
@@ -666,7 +845,13 @@ async def main():
     
     # Run evaluation
     num_distractors = args.num_distractors if args.num_distractors is not None else (0 if args.oracle_mode else None)
-    results = await evaluate_model(args.model, test_cases, args.limit, num_distractors=num_distractors)
+    results = await evaluate_model(
+        args.model,
+        test_cases,
+        args.limit,
+        num_distractors=num_distractors,
+        allow_fallback=args.allow_fallback,
+    )
     
     # Calculate metrics
     metrics = calculate_metrics(results)
@@ -688,7 +873,7 @@ async def main():
 
     print(f"\nEvaluation complete!")
     print(f"\nNext steps:")
-    print(f"1. Review results in {args.output}")
+    print(f"1. Review results in {BFCL_RESULTS_DIR}")
     print(f"2. Run for other models: python evaluate_bfcl.py --model llama3.2")
     print(f"3. Compare metrics across models")
 
