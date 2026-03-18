@@ -452,52 +452,50 @@ async def evaluate_model(
                         test_result['actual_function'] = actual_function
                         test_result['actual_params'] = actual_params
 
-                        # Check function correctness
-                        if actual_function == test['expected_function']:
-                            test_result['correct_function'] = True
-                            results['correct_function'] += 1
+                        # Outcome-based evaluation: E(O, Ô) ∈ {0, 1}
+                        # Execute tool call and compare outcome with ground truth
+                        try:
+                            tool_result = await session.call_tool(actual_function, actual_params)
+                            result_content = _extract_result_value(tool_result)
+                            test_result['actual_result'] = result_content
 
-                            # Check parameter correctness
-                            params_match = _compare_params(actual_params, test['expected_params'])
-                            if params_match:
-                                test_result['correct_params'] = True
-                                results['correct_params'] += 1
-
-                                # Execute tool and check result
-                                try:
-                                    tool_result = await session.call_tool(actual_function, actual_params)
-                                    result_content = _extract_result_value(tool_result)
-                                    test_result['actual_result'] = result_content
-
-                                    # Compare with expected result
-                                    if test.get('expected_result') is not None:
-                                        if _compare_results(result_content, test['expected_result']):
-                                            test_result['correct_result'] = True
-                                            results['correct_result'] += 1
-                                    else:
-                                        # If no expected result, count as correct if executed
-                                        test_result['correct_result'] = True
-                                        results['correct_result'] += 1
-
-                                except Exception as e:
-                                    test_result['error'] = f"Tool execution failed: {str(e)}"
+                            # Get expected outcome from ground truth
+                            expected_outcome = test.get('expected_result')
+                            
+                            # E(O, Ô): Binary evaluation based on outcome match
+                            outcome_matches = False
+                            if expected_outcome is not None:
+                                outcome_matches = _compare_results(result_content, expected_outcome)
+                            
+                            # Binary score: 1 if outcomes match, 0 otherwise
+                            if outcome_matches:
+                                test_result['correct_result'] = True
+                                results['correct_result'] += 1
+                                # Track auxiliary metrics for analysis
+                                if actual_function == test['expected_function']:
+                                    test_result['correct_function'] = True
+                                    results['correct_function'] += 1
+                                if _compare_params(actual_params, test['expected_params']):
+                                    test_result['correct_params'] = True
+                                    results['correct_params'] += 1
                             else:
-                                results['wrong_params'] += 1
-                                test_result['incorrect_output'] = {
-                                    'called_function': actual_function,
-                                    'actual_params': actual_params,
-                                    'expected_params': test['expected_params'],
-                                    'param_mismatch': True
+                                # Outcome mismatch - E(O, Ô) = 0
+                                test_result['correct_result'] = False
+                                test_result['outcome_mismatch'] = {
+                                    'expected': expected_outcome,
+                                    'actual': result_content,
+                                    'function_used': actual_function,
+                                    'params_used': actual_params
                                 }
-                        else:
-                            results['wrong_tool'] += 1
-                            test_result['incorrect_output'] = {
-                                'called_function': actual_function,
-                                'called_params': actual_params,
-                                'expected_function': test['expected_function']
-                            }
+
+                        except Exception as e:
+                            # Execution failure - E(O, Ô) = 0
+                            test_result['correct_result'] = False
+                            test_result['error'] = f"Tool execution failed: {str(e)}"
+                            results['no_tool_call'] += 1
                     else:
-                        # No tool call made
+                        # No tool call made - E(O, Ô) = 0
+                        test_result['correct_result'] = False
                         results['no_tool_call'] += 1
                         test_result['error'] = "Model did not make a tool call"
                         # Capture the actual text content the model generated
@@ -539,19 +537,45 @@ def _compare_params(actual: Dict, expected: Dict) -> bool:
     return True
 
 
-def _compare_values(actual: Any, expected: Any) -> bool:
-    """Compare two values with type coercion."""
+def _compare_values(actual: Any, expected: Any, tolerance: float = 0.01) -> bool:
+    """Compare two values with type coercion and tolerance for numerical values."""
     # Try direct comparison
     if actual == expected:
         return True
+    
+    # Handle dict vs primitive comparison (e.g., {"result": 1.803} vs 1.803)
+    if isinstance(expected, dict) and not isinstance(actual, dict):
+        # Extract value from dict (try common keys)
+        for key in ['result', 'value', 'output']:
+            if key in expected:
+                expected = expected[key]
+                break
+    elif isinstance(actual, dict) and not isinstance(expected, dict):
+        # Extract value from dict
+        for key in ['result', 'value', 'output']:
+            if key in actual:
+                actual = actual[key]
+                break
     
     # Try numeric comparison with tolerance
     try:
         actual_num = float(actual)
         expected_num = float(expected)
-        return abs(actual_num - expected_num) < 0.01
+        return abs(actual_num - expected_num) < tolerance
     except (ValueError, TypeError):
         pass
+    
+    # Handle list/array comparison
+    if isinstance(actual, (list, tuple)) and isinstance(expected, (list, tuple)):
+        if len(actual) != len(expected):
+            return False
+        return all(_compare_values(a, e, tolerance) for a, e in zip(actual, expected))
+    
+    # Handle dict comparison recursively
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        if set(actual.keys()) != set(expected.keys()):
+            return False
+        return all(_compare_values(actual[k], expected[k], tolerance) for k in actual.keys())
     
     return False
 
@@ -586,43 +610,45 @@ def _extract_result_value(tool_result: Any) -> Any:
 
 def calculate_metrics(results: Dict) -> Dict:
     """
-    Calculate F1 score and TSR from evaluation results.
+    Calculate evaluation metrics based on outcome-based evaluation: E(O, Ô) ∈ {0, 1}
     
-    F1 Score: Harmonic mean of precision and recall
-    TSR (Tool Selection Rate): Percentage of correct tool selections
+    Primary Metric:
+    - Outcome Accuracy: Percentage of tasks where final outcome matches ground truth
+    
+    Auxiliary Metrics (for analysis):
+    - Function Selection: Which function was chosen
+    - Parameter Accuracy: Correctness of parameters
+    - Precision/Recall: Traditional metrics
     """
     total = results['total_tests']
+    correct_result = results['correct_result']  # E(O, Ô) = 1 count
     correct_function = results['correct_function']
     correct_params = results['correct_params']
-    correct_result = results['correct_result']
     
-    # Tool Selection Rate (TSR)
+    # Primary metric: Outcome-based success rate
+    outcome_accuracy = (correct_result / total * 100) if total > 0 else 0
+    
+    # Auxiliary metrics for trajectory analysis
     tsr_function = (correct_function / total * 100) if total > 0 else 0
     tsr_params = (correct_params / total * 100) if total > 0 else 0
-    tsr_result = (correct_result / total * 100) if total > 0 else 0
     
-    # F1 Score (for function selection)
-    # Precision: correct tools / tools called
+    # Traditional F1/Precision/Recall (kept for comparison)
     tools_called = total - results['no_tool_call']
-    precision = (correct_function / tools_called * 100) if tools_called > 0 else 0
-    
-    # Recall: correct tools / total tests
-    recall = (correct_function / total * 100) if total > 0 else 0
-    
-    # F1 = 2 * (P * R) / (P + R)
+    precision = (correct_result / tools_called * 100) if tools_called > 0 else 0
+    recall = (correct_result / total * 100) if total > 0 else 0
     f1_score = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
     
     metrics = {
+        'outcome_accuracy': round(outcome_accuracy, 2),  # Primary: E(O, Ô)
         'f1_score': round(f1_score, 2),
         'precision': round(precision, 2),
         'recall': round(recall, 2),
         'tsr_function_selection': round(tsr_function, 2),
         'tsr_parameter_accuracy': round(tsr_params, 2),
-        'tsr_result_accuracy': round(tsr_result, 2),
         'total_tests': total,
+        'correct_outcome': correct_result,  # E(O, Ô) = 1 count
         'correct_function': correct_function,
         'correct_params': correct_params,
-        'correct_result': correct_result,
         'no_tool_call': results['no_tool_call'],
         'wrong_tool': results['wrong_tool']
     }
@@ -631,28 +657,32 @@ def calculate_metrics(results: Dict) -> Dict:
 
 
 def print_report(metrics: Dict, model: str):
-    """Print evaluation report."""
+    """Print evaluation report with outcome-based metrics."""
     print(f"\n{'='*60}")
-    print(f"BFCL Evaluation Results - {model}")
+    print(f"Outcome-Based Evaluation Results - {model}")
     print(f"{'='*60}\n")
     
-    print(f"Overall Metrics:")
+    print(f"Primary Metric (E(O, Ô)):")
+    print(f"  Outcome Accuracy:      {metrics['outcome_accuracy']}%")
+    print(f"  Tasks Completed:       {metrics['correct_outcome']}/{metrics['total_tests']}")
+    print()
+    
+    print(f"Auxiliary Metrics (Trajectory Analysis):")
+    print(f"  Function Selection:    {metrics['tsr_function_selection']}%")
+    print(f"  Parameter Accuracy:    {metrics['tsr_parameter_accuracy']}%")
+    print()
+    
+    print(f"Traditional Metrics:")
     print(f"  F1 Score:              {metrics['f1_score']}%")
     print(f"  Precision:             {metrics['precision']}%")
     print(f"  Recall:                {metrics['recall']}%")
     print()
     
-    print(f"Tool Selection Rate (TSR):")
-    print(f"  Function Selection:    {metrics['tsr_function_selection']}%")
-    print(f"  Parameter Accuracy:    {metrics['tsr_parameter_accuracy']}%")
-    print(f"  Result Accuracy:       {metrics['tsr_result_accuracy']}%")
-    print()
-    
     print(f"Breakdown:")
     print(f"  Total Tests:           {metrics['total_tests']}")
+    print(f"  Correct Outcome:       {metrics['correct_outcome']}")
     print(f"  Correct Function:      {metrics['correct_function']}")
     print(f"  Correct Params:        {metrics['correct_params']}")
-    print(f"  Correct Result:        {metrics['correct_result']}")
     print(f"  No Tool Call:          {metrics['no_tool_call']}")
     print(f"  Wrong Tool:            {metrics['wrong_tool']}")
     print()

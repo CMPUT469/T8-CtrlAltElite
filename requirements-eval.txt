@@ -5,3 +5,7 @@ mcp>=1.26.0
 openai>=1.0.0  # For Ollama OpenAI-compatible API
 supabase>=2.0.0
 python-dotenv>=1.0.0
+
+# Jefferson Stats Tools (Week 3)
+scipy>=1.11.0
+numpy>=1.24.0
