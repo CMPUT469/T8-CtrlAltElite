@@ -14,9 +14,10 @@ mcp = FastMCP("Multi-Dataset Function Calling Tools", json_response=True)
 # TOOL IMPORTS - Each module registers its own tools
 # ============================================================================
 
-from tools import bfcl_math_tools, jefferson_stats_tools, sql_tools
+from tools import bfcl_math_tools, finance_tools, jefferson_stats_tools, sql_tools
 
 bfcl_math_tools.register_tools(mcp)
+finance_tools.register_tools(mcp)
 jefferson_stats_tools.register_tools(mcp)
 sql_tools.register_tools(mcp)
 
