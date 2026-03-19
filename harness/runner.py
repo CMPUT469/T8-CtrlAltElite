@@ -45,6 +45,7 @@ from harness.metrics import (
     compare_values,
     extract_result_value,
     print_report,
+    serialize_tool_result,
     wos,
 )
 from harness.mcp_session import filter_tools_for_task, mcp_session
@@ -73,6 +74,8 @@ DATASETS: dict[str, dict] = {
     "postgres": {
         "tasks": {
             "L1": "datasets/postgres/tasks_l1.jsonl",
+            "L2": "datasets/postgres/tasks_l2.jsonl",
+            "L3": "datasets/postgres/tasks_l3.jsonl",
         },
         "server": "mcp-server/main.py",
     },
@@ -122,7 +125,7 @@ def load_tasks(dataset: str, levels: list[str], limit: Optional[int]) -> list[di
                 if line:
                     t = json.loads(line)
                     t.setdefault("level", level)
-                    if dataset == "bfcl" and "question" in t:
+                    if dataset in ("bfcl", "postgres") and "question" in t:
                         t = _normalize_bfcl_task(t)
                     tasks.append(t)
     if limit:
@@ -188,6 +191,9 @@ async def run_evaluation(
                 "actual_steps": 0,
                 "error": None,
                 "call_source": "none",
+                "raw_model_output": None,
+                "tool_result": None,
+                "expected_outcome": None,
             }
 
             # Build system prompt
@@ -215,7 +221,9 @@ async def run_evaluation(
                 )
 
                 try:
-                    tool_call = client.get_tool_call(messages, tools_for_step)
+                    model_response = client.get_response(messages, tools_for_step)
+                    tool_call = model_response.tool_call
+                    record["raw_model_output"] = model_response.raw_text
                 except Exception as exc:
                     record["error"] = f"Model call failed: {exc}"
                     totals["no_tool_call"] += 1
@@ -238,6 +246,7 @@ async def run_evaluation(
                     raw_result = await session.call_tool(
                         tool_call.function_name, tool_call.arguments
                     )
+                    record["tool_result"] = serialize_tool_result(raw_result)
                     result_value = extract_result_value(raw_result)
                     step_results.append(result_value)
                     record["actual_result"] = result_value
@@ -276,6 +285,7 @@ async def run_evaluation(
             if step_results:
                 # Compare the final step result against expected_outcome
                 expected_outcome = task.get("expected_outcome")
+                record["expected_outcome"] = expected_outcome
                 expected_params = task.get("expected_params")
                 fn_ok = record["actual_function"] == expected_fn
                 params_ok = True

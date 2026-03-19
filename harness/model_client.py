@@ -30,6 +30,13 @@ class ToolCall:
 
 
 @dataclass
+class ModelResponse:
+    """Tool call (if any) plus the raw model text for logging."""
+    tool_call: Optional[ToolCall]
+    raw_text: Optional[str]  # message.content — model's text output
+
+
+@dataclass
 class ModelConfig:
     """Everything needed to instantiate a client for one model."""
     name: str                          # model identifier sent to the API
@@ -96,9 +103,17 @@ class ModelClient:
         messages: list[dict],
         tools: list[dict],
     ) -> Optional[ToolCall]:
+        """Convenience wrapper — returns just the ToolCall (or None)."""
+        return self.get_response(messages, tools).tool_call
+
+    def get_response(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+    ) -> ModelResponse:
         """
-        Call the model and extract a ToolCall, or None if the model
-        produced no tool call.
+        Call the model and return a ModelResponse containing the tool call
+        (if any) and the raw model text for logging.
 
         Falls back to JSON-in-text parsing when allow_fallback=True and
         the model doesn't emit native tool_calls (useful for models that
@@ -106,27 +121,34 @@ class ModelClient:
         """
         response = self.chat(messages, tools)
         message = response.choices[0].message
+        raw_text = getattr(message, "content", None)
 
         # 1. Native tool call (preferred path for both Ollama and vLLM)
         if getattr(message, "tool_calls", None):
             tc = message.tool_calls[0]
-            return ToolCall(
-                function_name=tc.function.name,
-                arguments=json.loads(tc.function.arguments or "{}"),
-                call_source="native",
+            return ModelResponse(
+                tool_call=ToolCall(
+                    function_name=tc.function.name,
+                    arguments=json.loads(tc.function.arguments or "{}"),
+                    call_source="native",
+                ),
+                raw_text=raw_text,
             )
 
         # 2. Fallback: model emitted JSON-in-text
-        if self.allow_fallback and getattr(message, "content", None):
-            parsed = _parse_fallback_json(message.content)
+        if self.allow_fallback and raw_text:
+            parsed = _parse_fallback_json(raw_text)
             if parsed:
-                return ToolCall(
-                    function_name=str(parsed["tool"]),
-                    arguments=parsed["args"],
-                    call_source="fallback",
+                return ModelResponse(
+                    tool_call=ToolCall(
+                        function_name=str(parsed["tool"]),
+                        arguments=parsed["args"],
+                        call_source="fallback",
+                    ),
+                    raw_text=raw_text,
                 )
 
-        return None
+        return ModelResponse(tool_call=None, raw_text=raw_text)
 
     def probe_tool_support(self) -> bool:
         """

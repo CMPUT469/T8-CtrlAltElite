@@ -108,6 +108,30 @@ def extract_result_value(tool_result: Any) -> Any:
         return raw
 
 
+def serialize_tool_result(tool_result: Any) -> str:
+    """
+    Stable string serialization of an MCP tool result for logging.
+
+    Tries structured approaches first (model_dump, content attr),
+    falls back to repr() as a last resort.
+    """
+    try:
+        if hasattr(tool_result, "model_dump"):
+            return json.dumps(tool_result.model_dump(), default=str)
+    except Exception:
+        pass
+    try:
+        content = getattr(tool_result, "content", None)
+        if content is not None:
+            return json.dumps(content, default=str)
+    except Exception:
+        pass
+    try:
+        return json.dumps(tool_result, default=str)
+    except Exception:
+        return repr(tool_result)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Weighted Outcome Score
 # ──────────────────────────────────────────────────────────────────────────────
