@@ -29,7 +29,12 @@ ENV/
 !pyproject.toml
 threshold_results_*.json
 bfcl_results_*.json
-results/
+results/*
+!results/.gitignore
+!results/*/
+results/**/*.json
+results/**/*.log
+!results/**/.gitkeep
 bfcl_results_*
 
 # Logs

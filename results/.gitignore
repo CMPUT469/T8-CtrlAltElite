@@ -1,0 +1,5 @@
+# Keep dataset result folders in git, but ignore generated outputs.
+*
+!.gitignore
+!*/
+!**/.gitkeep
