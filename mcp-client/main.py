@@ -1,29 +1,10 @@
 """
 main.py
 
-A universal MCP client that uses a LOCAL Ollama model as the LLM.
+Legacy interactive MCP client retained from the initial project setup.
 
-Key features:
-- Works with ANY Ollama model name (e.g., qwen2.5, llama3.1, mistral, gpt-oss, etc.)
-- Connects to an MCP server via:
-  - STDIO (recommended for local dev): client launches the server script
-  - Streamable HTTP: client connects to a running server URL
-- Attempts native tool-calling (OpenAI-compatible) when the model supports it
-- Includes a JSON fallback for models that don't reliably emit tool_calls
-
-Requirements:
-  uv add mcp openai
-  (Ollama running locally: http://localhost:11434)
-
-Examples:
-  # STDIO: launch server script
-  uv run main.py --transport stdio --server ../mcp-server/main.py --model qwen2.5
-
-  # HTTP: connect to running MCP server
-  uv run main.py --transport http --url http://localhost:8000/mcp --model llama3.1
-
-  # Change Ollama base URL if needed
-  uv run main.py --model qwen2.5 --ollama-url http://localhost:11434
+It is not part of the active backend or evaluation architecture. The active
+runtime path for evaluation and backend configuration is the `harness/` path.
 """
 
 from __future__ import annotations
@@ -33,14 +14,17 @@ import asyncio
 import json
 import sys
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-
-from openai import OpenAI
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
+
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from harness.model_client import ModelClient, resolve_model_config
 
 
 def _json_dumps_safe(value: Any) -> str:
@@ -116,38 +100,6 @@ def _maybe_parse_fallback_tool_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-@dataclass(frozen=True)
-class OllamaConfig:
-    model: str
-    base_url: str  # should end with /v1 for OpenAI-compat endpoints
-
-
-class OllamaChatModel:
-    """
-    Uses OpenAI Python SDK pointed to Ollama's OpenAI-compatible API.
-
-    By default, Ollama exposes OpenAI-compatible endpoints at:
-      http://localhost:11434/v1
-    """
-
-    def __init__(self, config: OllamaConfig):
-        self._config = config
-        self._client = OpenAI(base_url=config.base_url, api_key="ollama")  # dummy key; Ollama ignores it
-
-    def chat(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-    ):
-        return self._client.chat.completions.create(
-            model=self._config.model,
-            messages=messages,
-            tools=tools,
-            tool_choice="auto" if tools else None,
-        )
-
-
-
 class McpConnector:
     def __init__(self):
         self._exit_stack = AsyncExitStack()
@@ -179,8 +131,8 @@ class McpConnector:
 
 
 
-class UniversalOllamaMcpClient:
-    def __init__(self, mcp: McpConnector, llm: OllamaChatModel):
+class UniversalMcpClient:
+    def __init__(self, mcp: McpConnector, llm: ModelClient):
         if mcp.session is None:
             raise ValueError("MCP session is not initialized.")
         self._mcp = mcp
@@ -267,7 +219,7 @@ class UniversalOllamaMcpClient:
         return raw_text
 
     async def chat_loop(self) -> None:
-        print("\nUniversal Ollama MCP Client started. Type 'quit' to exit.")
+        print("\nUniversal MCP Client started. Type 'quit' to exit.")
         while True:
             query = input("\nQuery: ").strip()
             if query.lower() == "quit":
@@ -283,7 +235,7 @@ class UniversalOllamaMcpClient:
 # CLI / Entrypoint
 # -----------------------------
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Universal MCP client powered by local Ollama LLMs.")
+    parser = argparse.ArgumentParser(description="Universal MCP client powered by OpenAI-compatible backends.")
     parser.add_argument(
         "--transport",
         choices=["stdio", "http"],
@@ -303,22 +255,47 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         required=True,
-        help="Ollama model name (e.g., qwen2.5, llama3.1, mistral, gpt-oss).",
+        help="Model identifier (e.g. qwen2.5:7b or meta-llama/Llama-3.1-8B-Instruct).",
+    )
+    parser.add_argument(
+        "--backend",
+        default=None,
+        choices=["ollama", "vllm", "openai"],
+        help="Provider backend. If omitted, prefer configs/models.yaml for this model, else default to ollama.",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help="Override API base URL. If omitted, prefer configs/models.yaml for this model.",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="Override API key / bearer token. If omitted, prefer configs/models.yaml or LLM_API_KEY.",
     )
     parser.add_argument(
         "--ollama-url",
         default="http://localhost:11434",
-        help="Base Ollama host URL (default: http://localhost:11434).",
+        help="Deprecated alias for --base-url when using Ollama.",
     )
     return parser.parse_args()
 
 
 async def _async_main() -> None:
     args = _parse_args()
+    base_url_override = args.base_url
+    if base_url_override is None and args.ollama_url != "http://localhost:11434":
+        base_url_override = args.ollama_url.rstrip("/")
+        if not base_url_override.endswith("/v1"):
+            base_url_override += "/v1"
 
-    # Ollama OpenAI-compatible base URL
-    ollama_base_url = args.ollama_url.rstrip("/") + "/v1"
-    llm = OllamaChatModel(OllamaConfig(model=args.model, base_url=ollama_base_url))
+    model_cfg = resolve_model_config(
+        args.model,
+        backend=args.backend,
+        base_url=base_url_override,
+        api_key=args.api_key,
+    )
+    llm = ModelClient(model_cfg, allow_fallback=True)
 
     mcp = McpConnector()
     try:
@@ -334,9 +311,10 @@ async def _async_main() -> None:
         assert mcp.session is not None
         tools = (await mcp.session.list_tools()).tools
         print("Connected to MCP server. Tools:", [t.name for t in tools])
-        print("Using Ollama model:", args.model)
+        print(f"Using model: {model_cfg.name} [{model_cfg.backend}]")
+        print("LLM endpoint:", model_cfg.base_url)
 
-        client = UniversalOllamaMcpClient(mcp=mcp, llm=llm)
+        client = UniversalMcpClient(mcp=mcp, llm=llm)
         await client.chat_loop()
     finally:
         await mcp.close()

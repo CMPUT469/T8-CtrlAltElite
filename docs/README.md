@@ -15,7 +15,7 @@ Evaluates LLM function-calling on MCP tool servers using outcome-based scoring
 │   ├── mcp_session.py       ← MCP server lifecycle + tool helpers
 │   ├── metrics.py           ← E(O,Ô), TESR, F1, auxiliary stats  (replaces evaluation_framework.py)
 │   ├── threshold_sweep.py   ← distractor sweep    (replaces incremental_threshold.py)
-│   └── db_logger.py         ← Supabase logger     (moved from root, adds TESR + level columns)
+│   └── db_logger.py         ← Supabase logger     (active logging path)
 │
 ├── datasets/
 │   ├── jefferson_stats/
@@ -38,7 +38,7 @@ Evaluates LLM function-calling on MCP tool servers using outcome-based scoring
 │       ├── finance_tools.py
 │       └── sql_tools.py
 │
-├── mcp-client/              unchanged — interactive chat client
+├── mcp-client/              legacy — not part of the active evaluation architecture
 │   └── main.py
 │
 ├── schema.sql               unchanged — Supabase DDL (run ALTER TABLE below after migration)
