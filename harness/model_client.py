@@ -13,7 +13,9 @@ Supported backends:
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 from openai import OpenAI
@@ -45,6 +47,13 @@ class ModelConfig:
             api_key=d.get("api_key", "none"),
             extra=d.get("extra", {}),
         )
+
+
+_BACKEND_DEFAULTS = {
+    "ollama": "http://localhost:11434/v1",
+    "vllm":   "http://localhost:8000/v1",
+    "openai": "https://api.openai.com/v1",
+}
 
 
 class ModelClient:
@@ -197,3 +206,74 @@ def client_from_yaml(model_name: str, configs_path: str = "configs/models.yaml")
         f"Model '{model_name}' not found in {configs_path}. "
         f"Available: {[m['name'] for m in data.get('models', [])]}"
     )
+
+
+def resolve_model_config(
+    model_name: str,
+    *,
+    backend: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    configs_path: str = "configs/models.yaml",
+    default_backend: str = "ollama",
+) -> ModelConfig:
+    """
+    Resolve model/provider configuration from configs/models.yaml first,
+    then apply any explicit CLI overrides.
+
+    If the model is not present in YAML, fall back to backend defaults.
+    """
+    yaml_entry = _find_model_entry(model_name, configs_path)
+
+    resolved_backend = backend or (
+        yaml_entry["backend"] if yaml_entry else default_backend
+    )
+    if resolved_backend not in _BACKEND_DEFAULTS:
+        raise ValueError(
+            f"Unsupported backend '{resolved_backend}'. "
+            f"Expected one of {sorted(_BACKEND_DEFAULTS)}."
+        )
+
+    resolved_base_url = base_url or (
+        yaml_entry["base_url"] if yaml_entry else _BACKEND_DEFAULTS[resolved_backend]
+    )
+
+    if api_key is not None:
+        resolved_api_key = api_key
+    elif yaml_entry and "api_key" in yaml_entry:
+        resolved_api_key = _resolve_api_key_value(str(yaml_entry["api_key"]))
+    else:
+        resolved_api_key = os.environ.get("LLM_API_KEY", "none")
+
+    extra = dict(yaml_entry.get("extra", {})) if yaml_entry else {}
+    return ModelConfig(
+        name=model_name,
+        backend=resolved_backend,
+        base_url=resolved_base_url,
+        api_key=resolved_api_key,
+        extra=extra,
+    )
+
+
+def _find_model_entry(model_name: str, configs_path: str) -> Optional[dict[str, Any]]:
+    import yaml
+
+    path = Path(configs_path)
+    if not path.exists():
+        return None
+
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+
+    for entry in data.get("models", []):
+        if entry.get("name") == model_name:
+            return entry
+    return None
+
+
+def _resolve_api_key_value(value: str) -> str:
+    if value in {"", "none"}:
+        return "none"
+    if value.startswith("$"):
+        return os.environ.get(value[1:], "none")
+    return os.environ.get(value, value)
