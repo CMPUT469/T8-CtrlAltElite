@@ -43,6 +43,8 @@ python -m harness.runner --dataset bfcl --model qwen2.5:7b --level L1
 
 `configs/models.yaml` is the runtime model registry. Runtime resolves model defaults from that file first, then applies any CLI overrides such as `--backend`, `--base-url`, and `--api-key`.
 
+For Eureka-hosted vLLM endpoints, set `EUREKA_VLLM_BASE_URL` and `EUREKA_VLLM_API_KEY` in `.env` or your shell, then point a `vllm` model entry in `configs/models.yaml` at those env vars.
+
 ## Threshold Sweep
 
 ```powershell
