@@ -1,7 +1,7 @@
 # configs/models.yaml
 #
 # Add one entry per model you want to evaluate.
-# The runner picks up any entry by --model name.
+# Runtime resolves by model name from this file first, then applies any CLI overrides.
 #
 # backend options:
 #   ollama  – local Ollama server (current setup)
@@ -30,9 +30,9 @@ models:
   - name: meta-llama/Llama-3.1-8B-Instruct
     backend: vllm
     base_url: http://EUREKA_NODE:8000/v1   # <-- replace with real host
-    api_key: EUREKA_API_TOKEN              # <-- replace or use env var LLM_API_KEY
+    api_key: $LLM_API_KEY                  # <-- replace or point at another env var like $EUREKA_API_TOKEN
 
   - name: Qwen/Qwen2.5-7B-Instruct
     backend: vllm
     base_url: http://EUREKA_NODE:8000/v1
-    api_key: EUREKA_API_TOKEN
+    api_key: $LLM_API_KEY
