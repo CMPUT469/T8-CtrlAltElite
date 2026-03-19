@@ -14,7 +14,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from datasets import load_dataset
+# from datasets import load_dataset
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from openai import OpenAI
@@ -22,6 +22,29 @@ from huggingface_hub import hf_hub_download
 from dotenv import load_dotenv
 
 load_dotenv()  # Load .env (DATABASE_URL, etc.) before anything else
+
+
+def _serialize_tool_result(tool_result: Any) -> str:
+    """Produce a stable JSON string of a tool result for logging.
+
+    Preference: model_dump() → content attribute → direct JSON → repr().
+    """
+    try:
+        if hasattr(tool_result, "model_dump"):
+            return json.dumps(tool_result.model_dump(), default=str)
+    except Exception:
+        pass
+    try:
+        content = getattr(tool_result, "content", None)
+        if content is not None:
+            return json.dumps(content, default=str)
+    except Exception:
+        pass
+    try:
+        return json.dumps(tool_result, default=str)
+    except Exception:
+        return repr(tool_result)
+
 
 # Add mcp-client to path
 sys.path.append(str(Path(__file__).parent / "mcp-client"))
@@ -378,6 +401,7 @@ async def evaluate_model(
                     'query': test['query'],
                     'expected_function': test['expected_function'],
                     'expected_params': test['expected_params'],
+                    'expected_result': test.get('expected_result'),
                     'actual_function': None,
                     'actual_params': None,
                     'actual_result': None,
@@ -385,7 +409,9 @@ async def evaluate_model(
                     'correct_params': False,
                     'correct_result': False,
                     'error': None,
-                    'incorrect_output': None,  # Captures actual model output when there's an error
+                    'incorrect_output': None,
+                    'raw_model_output': None,
+                    'tool_result': None,
                     'call_source': 'none',
                 }
                 
@@ -430,6 +456,7 @@ async def evaluate_model(
                     )
                     
                     message = response.choices[0].message
+                    test_result['raw_model_output'] = message.content if hasattr(message, 'content') else None
                     tool_calls = getattr(message, 'tool_calls', None)
                     
                     if tool_calls and len(tool_calls) > 0:
@@ -461,6 +488,7 @@ async def evaluate_model(
                         # Execute tool call and compare outcome with ground truth
                         try:
                             tool_result = await session.call_tool(actual_function, actual_params)
+                            test_result['tool_result'] = _serialize_tool_result(tool_result)
                             result_content = _extract_result_value(tool_result)
                             test_result['actual_result'] = result_content
 
