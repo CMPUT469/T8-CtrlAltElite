@@ -76,6 +76,12 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
+    "finance": {
+        "tasks": {
+            "L1": "datasets/finance/tasks_l1.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
 }
 
 RESULTS_DIR = Path("results")
@@ -264,22 +270,29 @@ async def run_evaluation(
                     break
 
             # ── Outcome evaluation ────────────────────────────────────────
+            if record["actual_function"] and record["actual_function"] != expected_fn:
+                totals["wrong_tool"] += 1
+
             if step_results:
                 # Compare the final step result against expected_outcome
                 expected_outcome = task.get("expected_outcome")
+                expected_params = task.get("expected_params")
+                fn_ok = record["actual_function"] == expected_fn
+                params_ok = True
+                if expected_params is not None:
+                    params_ok = compare_params(
+                        record.get("actual_params") or {},
+                        expected_params,
+                    )
                 if expected_outcome is not None:
                     outcome_ok = compare_values(step_results[-1], expected_outcome)
                 else:
-                    # No expected_outcome declared → pass if tool executed without error
-                    outcome_ok = record.get("error") is None
+                    # No fixed outcome: score on correct tool routing + params.
+                    outcome_ok = fn_ok and params_ok and record.get("error") is None
 
                 if outcome_ok:
                     record["correct_result"] = True
                     totals["correct_result"] += 1
-
-                    exp_params = task.get("expected_params", {})
-                    if record["actual_function"] != expected_fn:
-                        totals["wrong_tool"] += 1
 
             details.append(record)
             status = "✓" if record["correct_result"] else "✗"
