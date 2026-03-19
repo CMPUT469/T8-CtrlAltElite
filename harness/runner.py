@@ -73,6 +73,8 @@ DATASETS: dict[str, dict] = {
     "postgres": {
         "tasks": {
             "L1": "datasets/postgres/tasks_l1.jsonl",
+            "L2": "datasets/postgres/tasks_l2.jsonl",
+            "L3": "datasets/postgres/tasks_l3.jsonl",
         },
         "server": "mcp-server/main.py",
     },
@@ -116,7 +118,7 @@ def load_tasks(dataset: str, levels: list[str], limit: Optional[int]) -> list[di
                 if line:
                     t = json.loads(line)
                     t.setdefault("level", level)
-                    if dataset == "bfcl" and "question" in t:
+                    if dataset in ("bfcl", "postgres") and "question" in t:
                         t = _normalize_bfcl_task(t)
                     tasks.append(t)
     if limit:
