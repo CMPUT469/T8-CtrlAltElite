@@ -86,6 +86,20 @@ RESULTS_DIR = Path("results")
 # Task loading
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _normalize_bfcl_task(task: dict) -> dict:
+    """Convert BFCL task format to runner's standard format."""
+    query = task["question"][0][0]["content"]
+    expected_call = task["expected_call"]
+    return {
+        "id": task.get("id"),
+        "level": task.get("level", "L1"),
+        "query": query,
+        "function": expected_call["name"],
+        "expected_params": expected_call.get("arguments", {}),
+        "expected_outcome": {"result": task["expected_result"]},
+    }
+
+
 def load_tasks(dataset: str, levels: list[str], limit: Optional[int]) -> list[dict]:
     registry = DATASETS[dataset]["tasks"]
     tasks = []
@@ -103,6 +117,8 @@ def load_tasks(dataset: str, levels: list[str], limit: Optional[int]) -> list[di
                 if line:
                     t = json.loads(line)
                     t.setdefault("level", level)
+                    if dataset == "bfcl" and "question" in t:
+                        t = _normalize_bfcl_task(t)
                     tasks.append(t)
     if limit:
         tasks = tasks[:limit]

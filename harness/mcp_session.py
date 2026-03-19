@@ -32,7 +32,7 @@ async def mcp_session(server_script: str | Path):
     server_script = Path(server_script)
     params = StdioServerParameters(
         command="uv",
-        args=["run", "python", str(server_script)],
+        args=["run", "python", server_script.name],
         env=dict(os.environ),
         cwd=str(server_script.parent),
     )
