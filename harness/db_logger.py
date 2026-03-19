@@ -120,7 +120,7 @@ def log_run(
                 detail_rows.append({
                     "run_id":            run_id,
                     "test_id":           d.get("task_id"),
-                    "level":             d.get("level"),           # L1 / L2 / L3
+                    "level":             d.get("level"),
                     "query":             d.get("query"),
                     "expected_function": d.get("expected_function"),
                     "actual_function":   d.get("actual_function"),
@@ -128,11 +128,14 @@ def log_run(
                     "actual_params":     d.get("actual_params"),
                     "actual_result":     actual_result,
                     "correct_result":    d.get("correct_result"),
-                    "optimal_steps":     d.get("optimal_steps"),   # new
-                    "actual_steps":      d.get("actual_steps"),    # new
+                    "optimal_steps":     d.get("optimal_steps"),
+                    "actual_steps":      d.get("actual_steps"),
                     "error":             d.get("error"),
                     "incorrect_output":  incorrect_output,
                     "call_source":       d.get("call_source"),
+                    "raw_model_output":  d.get("raw_model_output"),
+                    "tool_result":       d.get("tool_result"),
+                    "expected_outcome":  d.get("expected_outcome"),
                 })
 
             client.table("test_details").insert(detail_rows).execute()

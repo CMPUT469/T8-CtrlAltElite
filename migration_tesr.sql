@@ -51,3 +51,9 @@ ALTER TABLE test_details
     DROP COLUMN IF EXISTS correct_function,
     DROP COLUMN IF EXISTS correct_params,
     DROP COLUMN IF EXISTS expected_result;
+
+-- Raw output logging columns
+ALTER TABLE test_details
+    ADD COLUMN IF NOT EXISTS raw_model_output text,
+    ADD COLUMN IF NOT EXISTS tool_result      text,
+    ADD COLUMN IF NOT EXISTS expected_outcome jsonb;
