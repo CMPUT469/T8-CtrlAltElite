@@ -45,3 +45,7 @@ bfcl_results_*
 # Project specific
 gorilla_mcp_tools.json
 gorilla_test_cases.json
+
+# Directory tree outputs
+tree.txt
+tree_*.txt

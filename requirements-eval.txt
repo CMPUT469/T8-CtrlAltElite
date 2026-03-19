@@ -1,11 +1,22 @@
-# Requirements for BFCL Evaluation (Week 2)
-datasets>=2.14.0
-huggingface-hub>=0.19.0
-mcp>=1.26.0
-openai>=1.0.0  # For Ollama OpenAI-compatible API
-supabase>=2.0.0
-python-dotenv>=1.0.0
+# Fallback for pip users. Preferred: uv sync (see pyproject.toml)
 
-# Jefferson Stats Tools (Week 3)
+# MCP
+mcp>=1.26.0
+
+# LLM client — Ollama and vLLM both expose OpenAI-compatible endpoints
+openai>=1.0.0
+
+# Stats (jefferson_stats_tools.py)
 scipy>=1.11.0
 numpy>=1.24.0
+
+# Dataset loading (bfcl)
+datasets>=2.14.0
+huggingface-hub>=0.19.0
+
+# Cloud logging
+supabase>=2.0.0
+
+# Config / env
+python-dotenv>=1.0.0
+pyyaml>=6.0
