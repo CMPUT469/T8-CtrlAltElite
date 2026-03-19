@@ -1,15 +1,10 @@
 """
 main.py
 
-Interactive MCP client using the shared OpenAI-compatible provider path.
+Legacy interactive MCP client retained from the initial project setup.
 
-Key features:
-- Connects to an MCP server via:
-  - STDIO (recommended for local dev): client launches the server script
-  - Streamable HTTP: client connects to a running server URL
-- Reuses the harness backend config flow for provider/model/base_url/api_key
-- Attempts native tool-calling when the model supports it
-- Includes a JSON fallback for models that don't reliably emit tool_calls
+It is not part of the active backend or evaluation architecture. The active
+runtime path for evaluation and backend configuration is the `harness/` path.
 """
 
 from __future__ import annotations
