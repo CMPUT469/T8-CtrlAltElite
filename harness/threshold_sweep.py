@@ -26,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from harness.metrics import print_report
-from harness.model_client import ModelConfig
+from harness.model_client import resolve_model_config
 from harness.runner import DATASETS, run_evaluation, save_results
 
 DEFAULT_SWEEP = [0, 5, 10, 20, 40]
@@ -134,16 +134,11 @@ def main():
                    help="Print summary table from saved results (no new runs)")
     args = p.parse_args()
 
-    _BACKEND_DEFAULTS = {
-        "ollama": "http://localhost:11434/v1",
-        "vllm":   "http://localhost:8000/v1",
-        "openai": "https://api.openai.com/v1",
-    }
-    model_cfg = ModelConfig(
-        name=args.model,
+    model_cfg = resolve_model_config(
+        args.model,
         backend=args.backend,
-        base_url=args.base_url or _BACKEND_DEFAULTS[args.backend],
-        api_key=args.api_key or "none",
+        base_url=args.base_url,
+        api_key=args.api_key,
     )
 
     if args.summary:

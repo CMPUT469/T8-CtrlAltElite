@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -49,7 +48,7 @@ from harness.metrics import (
     wos,
 )
 from harness.mcp_session import filter_tools_for_task, mcp_session
-from harness.model_client import ModelClient, ModelConfig
+from harness.model_client import ModelClient, resolve_model_config
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Dataset registry
@@ -310,8 +309,10 @@ async def run_evaluation(
     return {
         "model": model_cfg.name,
         "backend": model_cfg.backend,
+        "base_url": model_cfg.base_url,
         "dataset": dataset,
         "levels": levels,
+        "num_distractors": num_distractors,
         "timestamp": datetime.now().isoformat(),
         "metrics": metrics,
         "details": details,
@@ -369,24 +370,13 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-_BACKEND_DEFAULTS = {
-    "ollama": "http://localhost:11434/v1",
-    "vllm":   "http://localhost:8000/v1",
-    "openai": "https://api.openai.com/v1",
-}
-
-
 def main():
     args = _build_parser().parse_args()
-
-    base_url = args.base_url or _BACKEND_DEFAULTS[args.backend]
-    api_key  = args.api_key or os.environ.get("LLM_API_KEY", "none")
-
-    model_cfg = ModelConfig(
-        name=args.model,
+    model_cfg = resolve_model_config(
+        args.model,
         backend=args.backend,
-        base_url=base_url,
-        api_key=api_key,
+        base_url=args.base_url,
+        api_key=args.api_key,
     )
 
     num_distractors = args.num_distractors if args.num_distractors is not None \
@@ -394,8 +384,8 @@ def main():
 
     print("=" * 62)
     print(f"  dataset  : {args.dataset}")
-    print(f"  model    : {args.model}  [{args.backend}]")
-    print(f"  endpoint : {base_url}")
+    print(f"  model    : {model_cfg.name}  [{model_cfg.backend}]")
+    print(f"  endpoint : {model_cfg.base_url}")
     print(f"  levels   : {args.level}")
     print(f"  mode     : {'oracle' if num_distractors == 0 else 'standard' if num_distractors is None else f'{num_distractors} distractors'}")
     print("=" * 62)
@@ -412,7 +402,7 @@ def main():
     if not output:
         sys.exit(1)
 
-    print_report(output["metrics"], args.model, args.dataset)
+    print_report(output["metrics"], model_cfg.name, args.dataset)
 
     path = args.output or save_results(output)
     if not args.output:

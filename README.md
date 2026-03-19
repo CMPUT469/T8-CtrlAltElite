@@ -2,17 +2,28 @@
 
 Lightweight open-source LLM agent tooling with the Model Context Protocol (MCP).
 
-## Project Structure
+## Active Architecture
 
-- `mcp-server/main.py`: FastMCP server with demo tools/resources/prompts.
-- `mcp-client/main.py`: Ollama-powered MCP client with tool-calling loop.
+- `harness/runner.py`: active evaluation entrypoint
+- `harness/model_client.py`: shared provider/model/base_url/api_key handling
+- `harness/mcp_session.py`: MCP server lifecycle for evaluation runs
+- `mcp-server/main.py`: FastMCP server entrypoint
+- `mcp-server/tools/*`: active domain/tool implementations
+
+## Legacy Code
+
+- `mcp-client/`: legacy interactive client from the initial project setup
+
+The active backend and evaluation architecture is the `harness/` path. Legacy paths are retained only to avoid risky deletions during stabilization work and should not be treated as the primary flow.
 
 ## Prerequisites
 
 - Python 3.13+
 - `uv` installed
-- Ollama installed and running locally on `http://localhost:11434`
-- At least one local model pulled, for example:
+- an OpenAI-compatible inference endpoint
+  - local Ollama today
+  - vLLM later
+- for local Ollama, at least one pulled model, for example:
 
 ```powershell
 ollama pull qwen2.5
@@ -21,49 +32,30 @@ ollama pull qwen2.5
 ## Install Dependencies
 
 ```powershell
-cd mcp-server
-uv sync
-
-cd ../mcp-client
-uv sync
+pip install -r requirements-eval.txt
 ```
 
-## Run The Project (Recommended: STDIO)
-
-Start from the client folder. The client launches the server subprocess automatically.
+## Run Evaluations
 
 ```powershell
-cd mcp-client
-uv run main.py --transport stdio --server ../mcp-server/main.py --model qwen2.5
+python -m harness.runner --dataset bfcl --model qwen2.5:7b --level L1
 ```
 
-At the `Query:` prompt, enter questions. Type `quit` to exit.
+`configs/models.yaml` is the runtime model registry. Runtime resolves model defaults from that file first, then applies any CLI overrides such as `--backend`, `--base-url`, and `--api-key`.
 
-## Run The Project (HTTP Mode)
-
-Use two terminals.
-
-Terminal 1 (server):
+## Threshold Sweep
 
 ```powershell
-cd mcp-server
-uv run main.py --transport streamable-http --host 127.0.0.1 --port 8012
+python -m harness.threshold_sweep --dataset bfcl --model qwen2.5:7b --sweep
 ```
 
-Terminal 2 (client):
+## PostgreSQL Setup
 
-```powershell
-cd mcp-client
-uv run main.py --transport http --url http://127.0.0.1:8012/mcp --model qwen2.5
-```
-
-## PostgreSQL Setup (for SQL Tool Evaluation)
-
-The MCP server includes 5 SQL tools backed by the [Postgrespro demo database](https://postgrespro.com/community/demodb) (airline flights dataset).
+The MCP server includes SQL tools backed by the [Postgrespro demo database](https://postgrespro.com/community/demodb).
 
 ### 1. Install PostgreSQL
 
-Download and install from https://www.postgresql.org/download/windows/ (PostgreSQL 18 recommended).
+Download and install from https://www.postgresql.org/download/windows/ .
 
 After installation, add the bin folder to your PATH:
 
@@ -90,27 +82,18 @@ psql -U postgres -d demo -f "C:\path\to\demo-small-en-20170815.sql"
 
 Copy `.env.example` to `.env` and set your password:
 
-```
+```text
 DATABASE_URL=postgresql://postgres:yourpassword@localhost:5432/demo
 ```
 
 ### 4. Run SQL Tool Evaluation
 
 ```powershell
-python evaluate_bfcl.py --model qwen3:4b --synthetic postgres_test_cases.jsonl
+python -m harness.runner --dataset postgres --model qwen2.5:7b --level L1
 ```
-
-This runs 20 test cases against the demo database across all 5 SQL tools:
-- `list_tables` — lists tables in a schema
-- `describe_table` — returns column names and types
-- `get_row_count` — counts rows in a table
-- `get_foreign_keys` — returns foreign key relationships
-- `execute_query` — runs a read-only SELECT query
-
-Results are logged to Supabase automatically.
 
 ## Notes
 
-- If port `8000` or `8012` is already in use, choose another port and keep client/server ports matched.
-- If model loading fails, run `ollama pull <model-name>` first.
+- Override model/provider defaults with `--backend`, `--base-url`, and `--api-key` when needed.
+- If model loading fails under Ollama, run `ollama pull <model-name>` first.
 - `DATABASE_URL` must be set in `.env` for SQL tools to work. Math tools work without it.
