@@ -42,6 +42,7 @@ async def _run_one(dataset, model_cfg, distractors, levels):
         num_distractors=distractors,
         allow_fallback=False,
     )
+    output["num_distractors"] = distractors
     path = save_results(output)
     return output, path
 
@@ -65,9 +66,9 @@ def _print_sweep_summary(results: list, model: str):
     print(f"\n{sep}")
     print(f"  Threshold sweep summary — {model}")
     print(sep)
-    header = f"  {'Distractors':<14} {'WOS%':<8} {'WOS-L1':<9} {'WOS-L2':<9} {'WOS-L3':<9} {'No-call'}"
+    header = f"  {'Distractors':<14} {'WOS%':<12} {'WOS-L1':<9} {'WOS-L2':<9} {'WOS-L3':<9} {'No-call'}"
     print(header)
-    print("  " + "-" * 62)
+    print("  " + "-" * 60)
 
     baseline_wos = None
 
@@ -76,15 +77,19 @@ def _print_sweep_summary(results: list, model: str):
         if baseline_wos is None:
             baseline_wos = wos
 
-        delta_wos = f"({wos - baseline_wos:+.1f}%)" if n != results[0][0] else "(baseline)"
+        delta_wos = (
+            f"({wos - baseline_wos:+.1f}%)"
+            if baseline_wos is not None and n != results[0][0]
+            else "(baseline)"
+        )
         label = "oracle" if n == 0 else str(n)
 
         print(
             f"  {label:<14} "
-            f"{wos:<5.1f}% {delta_wos:<10} "
-            f"{metrics['wos_l1']:<9.1f} "
-            f"{metrics['wos_l2']:<9.1f} "
-            f"{metrics['wos_l3']:<9.1f} "
+            f"{wos:<7.1f}% {delta_wos:<10} "
+            f"{metrics['wos_l1']:<9.2f} "
+            f"{metrics['wos_l2']:<9.2f} "
+            f"{metrics['wos_l3']:<9.2f} "
             f"{metrics['no_tool_call']}"
         )
 
@@ -95,11 +100,11 @@ def _load_sweep_from_disk(dataset: str, model: str, distractor_levels: list) -> 
     """Try to load previously saved results matching this sweep config."""
     model_safe = model.replace(":", "_").replace("/", "_")
     found = []
+    pattern = f"{dataset}_{model_safe}_*.json"
+    matches = sorted(RESULTS_DIR.glob(pattern), reverse=True)
+
     for n in distractor_levels:
-        # glob for any result file matching dataset + model
-        pattern = f"{dataset}_{model_safe}_*.json"
-        matches = sorted(RESULTS_DIR.glob(pattern), reverse=True)
-        # pick the most recent one that has matching num_distractors
+        # Pick the most recent file for this exact distractor value.
         for f in matches:
             try:
                 data = json.loads(f.read_text())
