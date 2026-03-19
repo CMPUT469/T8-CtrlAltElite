@@ -55,6 +55,12 @@ _BACKEND_DEFAULTS = {
     "openai": "https://api.openai.com/v1",
 }
 
+_BACKEND_API_KEY_ENV_VARS = {
+    "ollama": ("OLLAMA_API_KEY", "LLM_API_KEY"),
+    "vllm": ("EUREKA_VLLM_API_KEY", "VLLM_API_KEY", "LLM_API_KEY"),
+    "openai": ("OPENAI_API_KEY", "LLM_API_KEY"),
+}
+
 
 class ModelClient:
     """
@@ -196,16 +202,7 @@ def client_from_yaml(model_name: str, configs_path: str = "configs/models.yaml")
             base_url: http://eureka-node-01:8000/v1
             api_key: token-abc123
     """
-    import yaml  # optional dep; only needed when using this helper
-    with open(configs_path) as f:
-        data = yaml.safe_load(f)
-    for entry in data.get("models", []):
-        if entry["name"] == model_name:
-            return ModelClient(ModelConfig.from_dict(entry))
-    raise ValueError(
-        f"Model '{model_name}' not found in {configs_path}. "
-        f"Available: {[m['name'] for m in data.get('models', [])]}"
-    )
+    return ModelClient(resolve_model_config(model_name, configs_path=configs_path))
 
 
 def resolve_model_config(
@@ -234,16 +231,22 @@ def resolve_model_config(
             f"Expected one of {sorted(_BACKEND_DEFAULTS)}."
         )
 
-    resolved_base_url = base_url or (
-        yaml_entry["base_url"] if yaml_entry else _BACKEND_DEFAULTS[resolved_backend]
-    )
+    if base_url is not None:
+        resolved_base_url = _normalize_base_url(base_url)
+    elif yaml_entry and "base_url" in yaml_entry:
+        resolved_base_url = _resolve_base_url_value(
+            str(yaml_entry["base_url"]),
+            backend=resolved_backend,
+        )
+    else:
+        resolved_base_url = _normalize_base_url(_BACKEND_DEFAULTS[resolved_backend])
 
     if api_key is not None:
         resolved_api_key = api_key
     elif yaml_entry and "api_key" in yaml_entry:
         resolved_api_key = _resolve_api_key_value(str(yaml_entry["api_key"]))
     else:
-        resolved_api_key = os.environ.get("LLM_API_KEY", "none")
+        resolved_api_key = _default_api_key_for_backend(resolved_backend)
 
     extra = dict(yaml_entry.get("extra", {})) if yaml_entry else {}
     return ModelConfig(
@@ -277,3 +280,42 @@ def _resolve_api_key_value(value: str) -> str:
     if value.startswith("$"):
         return os.environ.get(value[1:], "none")
     return os.environ.get(value, value)
+
+
+def _resolve_base_url_value(value: str, *, backend: str) -> str:
+    if value.startswith("$"):
+        value = os.environ.get(value[1:], "")
+    if not value:
+        return _normalize_base_url(_BACKEND_DEFAULTS[backend])
+    return _normalize_base_url(value)
+
+
+def _normalize_base_url(value: str) -> str:
+    normalized = value.rstrip("/")
+    if not normalized.endswith("/v1"):
+        normalized += "/v1"
+    return normalized
+
+
+def _default_api_key_for_backend(backend: str) -> str:
+    for env_var in _BACKEND_API_KEY_ENV_VARS.get(backend, ("LLM_API_KEY",)):
+        value = os.environ.get(env_var)
+        if value:
+            return value
+    return "none"
+
+
+def provider_runtime_note(config: ModelConfig, *, allow_fallback: bool = False) -> Optional[str]:
+    """
+    Return a short provider-specific note for CLI output when one is useful.
+    """
+    if config.backend != "vllm":
+        return None
+
+    note = (
+        "vLLM is treated as a remote OpenAI-compatible endpoint; native tool calling "
+        "still depends on the served model and vLLM stack."
+    )
+    if not allow_fallback:
+        note += " Use --allow-fallback if the endpoint returns JSON-in-text instead of tool_calls."
+    return note

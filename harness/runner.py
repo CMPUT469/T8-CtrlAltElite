@@ -48,7 +48,7 @@ from harness.metrics import (
     wos,
 )
 from harness.mcp_session import filter_tools_for_task, mcp_session
-from harness.model_client import ModelClient, resolve_model_config
+from harness.model_client import ModelClient, provider_runtime_note, resolve_model_config
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Dataset registry
@@ -338,7 +338,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backend", default="ollama", choices=["ollama", "vllm", "openai"],
                    help="Provider backend (default: ollama)")
     p.add_argument("--base-url", default=None,
-                   help="Override API base URL (default: http://localhost:11434/v1 for ollama)")
+                   help="Override API base URL (otherwise use configs/models.yaml, then backend defaults)")
     p.add_argument("--api-key", default=None,
                    help="API key / bearer token for the endpoint")
     p.add_argument("--level", nargs="+", default=["L1", "L2", "L3"],
@@ -375,6 +375,9 @@ def main():
     print(f"  endpoint : {model_cfg.base_url}")
     print(f"  levels   : {args.level}")
     print(f"  mode     : {'oracle' if num_distractors == 0 else 'standard' if num_distractors is None else f'{num_distractors} distractors'}")
+    runtime_note = provider_runtime_note(model_cfg, allow_fallback=args.allow_fallback)
+    if runtime_note:
+        print(f"  note     : {runtime_note}")
     print("=" * 62)
 
     output = asyncio.run(run_evaluation(
