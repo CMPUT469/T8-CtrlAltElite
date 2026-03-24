@@ -3,6 +3,11 @@ Unified evaluation runner.
 
 Replaces evaluate_jefferson.py and evaluate_bfcl.py with a single entry point.
 
+Scoring is outcome-based only (MCPVerse-style WOS). The `functions` field in
+task JSONL is a reference path logged for human transparency — it never
+influences scoring. A model that reaches the correct answer via an alternative
+tool sequence scores the same as one that follows the reference path.
+
 Usage examples
 ──────────────
 # Ollama (current setup)
@@ -19,7 +24,7 @@ python -m harness.runner \\
     --api-key token-abc123 \\
     --level L2 L3
 
-# Oracle mode (only the correct tool exposed — no distractors)
+# Oracle mode (only the reference tools exposed — no distractors)
 python -m harness.runner --dataset bfcl --model qwen2.5:7b --oracle
 
 # Limit to first 10 tasks for a quick smoke test
@@ -41,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from harness.metrics import (
     calculate_metrics,
-    compare_params,
+    compare_outcome_across_steps,
     compare_values,
     extract_result_value,
     print_report,
@@ -49,11 +54,10 @@ from harness.metrics import (
     wos,
 )
 from harness.mcp_session import filter_tools_for_task, mcp_session
-from harness.model_client import ModelClient, resolve_model_config
+from harness.model_client import ModelClient, ModelConfig, resolve_model_config
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Dataset registry
-# Each entry maps a dataset name to its JSONL path and the MCP server to use.
 # ──────────────────────────────────────────────────────────────────────────────
 
 DATASETS: dict[str, dict] = {
@@ -68,6 +72,8 @@ DATASETS: dict[str, dict] = {
     "bfcl": {
         "tasks": {
             "L1": "datasets/bfcl_math/tasks_l1.jsonl",
+            "L2": "datasets/bfcl_math/tasks_l2.jsonl",
+            "L3": "datasets/bfcl_math/tasks_l3.jsonl",
         },
         "server": "mcp-server/main.py",
     },
@@ -104,7 +110,7 @@ def _normalize_bfcl_task(task: dict) -> dict:
         "id": task.get("id"),
         "level": task.get("level", "L1"),
         "query": query,
-        "function": expected_call["name"],
+        "functions": [expected_call["name"]],
         "expected_params": expected_call.get("arguments", {}),
         "expected_outcome": {"result": task["expected_result"]},
     }
@@ -157,12 +163,10 @@ async def run_evaluation(
     client = ModelClient(model_cfg, allow_fallback=allow_fallback)
     server_script = Path(DATASETS[dataset]["server"])
 
-    # Running totals
     totals = dict(
         total_tests=len(tasks),
         correct_result=0,
         no_tool_call=0,
-        wrong_tool=0,
     )
     details: list[dict] = []
 
@@ -170,35 +174,38 @@ async def run_evaluation(
         print(f"MCP server ready - {len(all_tools)} tools available\n")
 
         for i, task in enumerate(tasks, 1):
-            task_id = task.get("id", f"task_{i}")
-            query = task["query"]
-            level = task.get("level", "L1")
-            # L3 tasks may list multiple functions; L1/L2 use a single string
-            expected_fn = task.get("function") or task.get("functions", ["?"])[0]
-            # For L3, optimal_steps = number of listed functions
-            optimal_steps = len(task["functions"]) if "functions" in task else 1
+            task_id      = task.get("id", f"task_{i}")
+            query        = task["query"]
+            level        = task.get("level", "L1")
+
+            # Reference functions — for log transparency only, not scored
+            ref_functions = task.get("functions") or (
+                [task["function"]] if "function" in task else []
+            )
+            optimal_steps = len(ref_functions) if ref_functions else 1
 
             print(f"[{i}/{len(tasks)}] {level} | {task_id}: {query[:65]}...")
 
             record: dict = {
-                "task_id": task_id,
-                "level": level,
-                "query": query,
-                "expected_function": expected_fn,
-                "actual_function": None,
-                "actual_params": None,
-                "actual_result": None,
-                "correct_result": False,
-                "optimal_steps": optimal_steps,
-                "actual_steps": 0,
-                "error": None,
-                "call_source": "none",
-                "raw_model_output": None,
-                "tool_result": None,
-                "expected_outcome": None,
+                "task_id":            task_id,
+                "level":              level,
+                "query":              query,
+                # Reference path (transparency only)
+                "ref_functions":      ref_functions,
+                # What the model actually did
+                "actual_functions":   [],
+                "actual_params":      None,
+                "actual_result":      None,
+                "correct_result":     False,
+                "optimal_steps":      optimal_steps,
+                "actual_steps":       0,
+                "error":              None,
+                "call_source":        "none",
+                "raw_model_output":   None,
+                "tool_result":        None,
+                "expected_outcome":   None,
             }
 
-            # Build system prompt
             sys_content = "You are a helpful assistant. Use the provided tools when needed."
             if allow_fallback:
                 sys_content += (
@@ -207,24 +214,24 @@ async def run_evaluation(
                 )
             messages = [
                 {"role": "system", "content": sys_content},
-                {"role": "user", "content": query},
+                {"role": "user",   "content": query},
             ]
 
-            # ── Multi-step loop for L3 tasks ──────────────────────────────
-            # For L1/L2 we still use the same loop — it just runs once.
-            max_steps = optimal_steps + 2  # allow a couple of extra steps
-            step_results = []
+            # Allow a couple of steps beyond optimal in case the model takes
+            # a valid alternative path that happens to be slightly longer
+            max_steps   = optimal_steps + 2
+            step_results: list = []
 
             for step in range(max_steps):
                 tools_for_step = filter_tools_for_task(
                     all_tools,
-                    relevant_name=expected_fn,
+                    relevant_names=ref_functions or list({t["function"]["name"] for t in all_tools}),
                     num_distractors=num_distractors,
                 )
 
                 try:
                     model_response = client.get_response(messages, tools_for_step)
-                    tool_call = model_response.tool_call
+                    tool_call      = model_response.tool_call
                     record["raw_model_output"] = model_response.raw_text
                 except Exception as exc:
                     record["error"] = f"Model call failed: {exc}"
@@ -232,102 +239,99 @@ async def run_evaluation(
                     break
 
                 if tool_call is None:
-                    # Model stopped calling tools
                     if step == 0:
                         record["error"] = "Model made no tool call"
                         totals["no_tool_call"] += 1
                     break
 
                 record["actual_steps"] += 1
-                record["actual_function"] = tool_call.function_name
-                record["actual_params"] = tool_call.arguments
-                record["call_source"] = tool_call.call_source
+                record["actual_functions"].append(tool_call.function_name)
+                record["actual_params"]  = tool_call.arguments
+                record["call_source"]    = tool_call.call_source
 
-                # Execute the tool
                 try:
-                    raw_result = await session.call_tool(
+                    raw_result   = await session.call_tool(
                         tool_call.function_name, tool_call.arguments
                     )
-                    record["tool_result"] = serialize_tool_result(raw_result)
-                    result_value = extract_result_value(raw_result)
+                    record["tool_result"]  = serialize_tool_result(raw_result)
+                    result_value           = extract_result_value(raw_result)
                     step_results.append(result_value)
                     record["actual_result"] = result_value
                 except Exception as exc:
-                    record["error"] = f"Tool execution failed at step {step+1}: {exc}"
+                    record["error"] = f"Tool execution failed at step {step + 1}: {exc}"
                     totals["no_tool_call"] += 1
                     break
 
-                # Feed result back into conversation for multi-step tasks
                 messages.append({
                     "role": "assistant",
                     "content": None,
                     "tool_calls": [{
-                        "id": f"call_{step}",
+                        "id":   f"call_{step}",
                         "type": "function",
                         "function": {
-                            "name": tool_call.function_name,
+                            "name":      tool_call.function_name,
                             "arguments": json.dumps(tool_call.arguments),
                         },
                     }],
                 })
                 messages.append({
-                    "role": "tool",
+                    "role":         "tool",
                     "tool_call_id": f"call_{step}",
-                    "content": json.dumps(result_value),
+                    "content":      json.dumps(result_value),
                 })
 
-                # For L1/L2, one step is enough - break after first tool call
                 if level in ("L1", "L2"):
                     break
 
-            # ── Outcome evaluation ────────────────────────────────────────
-            if record["actual_function"] and record["actual_function"] != expected_fn:
-                totals["wrong_tool"] += 1
-
+            # ── Outcome evaluation (no routing checks) ────────────────────
             if step_results:
-                # Compare the final step result against expected_outcome
-                expected_outcome = task.get("expected_outcome")
+                expected_outcome          = task.get("expected_outcome")
                 record["expected_outcome"] = expected_outcome
-                expected_params = task.get("expected_params")
-                fn_ok = record["actual_function"] == expected_fn
-                params_ok = True
-                if expected_params is not None:
-                    params_ok = compare_params(
-                        record.get("actual_params") or {},
-                        expected_params,
-                    )
+
                 if expected_outcome is not None:
-                    outcome_ok = compare_values(step_results[-1], expected_outcome)
+                    # Deterministic tasks: check values across all step results
+                    outcome_ok = (
+                        compare_outcome_across_steps(step_results, expected_outcome)
+                        if isinstance(expected_outcome, dict)
+                        else compare_values(step_results[-1], expected_outcome)
+                    )
                 else:
-                    # No fixed outcome: score on correct tool routing + params.
-                    outcome_ok = fn_ok and params_ok and record.get("error") is None
+                    # Non-deterministic tasks (finance/postgres): a successful
+                    # tool call with no error is a pass
+                    outcome_ok = record["actual_steps"] > 0 and record.get("error") is None
 
                 if outcome_ok:
                     record["correct_result"] = True
                     totals["correct_result"] += 1
 
             details.append(record)
-            status = "OK" if record["correct_result"] else "X"
+
             wos_val = wos(
                 outcome=record["correct_result"],
                 optimal_steps=record["optimal_steps"],
                 actual_steps=record["actual_steps"],
             )
-            print(f"  {status}  fn={record['actual_function'] or 'none'} | "
-                  f"steps={record['actual_steps']}/{record['optimal_steps']} | "
-                  f"wos={wos_val:.2f}")
+            status = "OK" if record["correct_result"] else "X"
+            # Log actual vs reference path for human inspection
+            actual_path = "→".join(record["actual_functions"]) or "none"
+            ref_path    = "→".join(ref_functions) or "?"
+            print(
+                f"  {status}  actual={actual_path} | ref={ref_path} | "
+                f"steps={record['actual_steps']}/{record['optimal_steps']} | "
+                f"wos={wos_val:.2f}"
+            )
 
     metrics = calculate_metrics(details, totals)
     return {
-        "model": model_cfg.name,
-        "backend": model_cfg.backend,
-        "base_url": model_cfg.base_url,
-        "dataset": dataset,
-        "levels": levels,
+        "model":           model_cfg.name,
+        "backend":         model_cfg.backend,
+        "base_url":        model_cfg.base_url,
+        "dataset":         dataset,
+        "levels":          levels,
         "num_distractors": num_distractors,
-        "timestamp": datetime.now().isoformat(),
-        "metrics": metrics,
-        "details": details,
+        "timestamp":       datetime.now().isoformat(),
+        "metrics":         metrics,
+        "details":         details,
     }
 
 
@@ -336,11 +340,11 @@ async def run_evaluation(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def save_results(output: dict) -> Path:
-    model_safe = output["model"].replace(":", "_").replace("/", "_")
-    dataset = output["dataset"]
+    model_safe  = output["model"].replace(":", "_").replace("/", "_")
+    dataset     = output["dataset"]
     dataset_dir = RESULTS_DIR / dataset
     dataset_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = dataset_dir / f"{dataset}_{model_safe}_{ts}.json"
     with open(path, "w") as f:
         json.dump(output, f, indent=2)
@@ -357,34 +361,25 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--dataset", required=True, choices=list(DATASETS),
-                   help="Which dataset to evaluate")
-    p.add_argument("--model", required=True,
+    p.add_argument("--dataset",  required=True, choices=list(DATASETS))
+    p.add_argument("--model",    required=True,
                    help="Model identifier (e.g. qwen2.5:7b or meta-llama/Llama-3.1-8B-Instruct)")
-    p.add_argument("--backend", default="ollama", choices=["ollama", "vllm", "openai"],
-                   help="Provider backend (default: ollama)")
-    p.add_argument("--base-url", default=None,
-                   help="Override API base URL (default: http://localhost:11434/v1 for ollama)")
-    p.add_argument("--api-key", default=None,
-                   help="API key / bearer token for the endpoint")
-    p.add_argument("--level", nargs="+", default=["L1", "L2", "L3"],
-                   choices=["L1", "L2", "L3"],
-                   help="Task levels to include (default: all)")
-    p.add_argument("--limit", type=int, default=None,
-                   help="Cap total tasks across all levels (useful for smoke tests)")
-    p.add_argument("--oracle", action="store_true",
-                   help="Oracle mode: expose only the correct tool per task")
-    p.add_argument("--num-distractors", type=int, default=None,
-                   help="Number of distractor tools (overrides --oracle)")
-    p.add_argument("--allow-fallback", action="store_true",
-                   help="Accept JSON-in-text tool calls from models without native support")
-    p.add_argument("--output", type=Path, default=None,
-                   help="Custom output path for results JSON")
+    p.add_argument("--backend",  default="ollama", choices=["ollama", "vllm", "openai"])
+    p.add_argument("--base-url", default=None)
+    p.add_argument("--api-key",  default=None)
+    p.add_argument("--level",    nargs="+", default=["L1", "L2", "L3"],
+                   choices=["L1", "L2", "L3"])
+    p.add_argument("--limit",    type=int, default=None)
+    p.add_argument("--oracle",   action="store_true",
+                   help="Oracle mode: expose only the reference tools per task")
+    p.add_argument("--num-distractors", type=int, default=None)
+    p.add_argument("--allow-fallback",  action="store_true")
+    p.add_argument("--output",   type=Path, default=None)
     return p
 
 
 def main():
-    args = _build_parser().parse_args()
+    args      = _build_parser().parse_args()
     model_cfg = resolve_model_config(
         args.model,
         backend=args.backend,
@@ -392,8 +387,10 @@ def main():
         api_key=args.api_key,
     )
 
-    num_distractors = args.num_distractors if args.num_distractors is not None \
-                      else (0 if args.oracle else None)
+    num_distractors = (
+        args.num_distractors if args.num_distractors is not None
+        else (0 if args.oracle else None)
+    )
 
     print("=" * 62)
     print(f"  dataset  : {args.dataset}")
@@ -417,18 +414,16 @@ def main():
 
     print_report(output["metrics"], model_cfg.name, args.dataset)
 
-    path = args.output or save_results(output)
-    if not args.output:
-        # save_results already wrote it
-        pass
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.output, "w") as f:
             json.dump(output, f, indent=2)
+        path = args.output
+    else:
+        path = save_results(output)
 
     print(f"Results saved -> {path}\n")
 
-    # Cloud logging — silently skipped if SUPABASE_URL/KEY not in .env
     try:
         from harness.db_logger import log_run
         log_run(output, suite=args.dataset, num_distractors=num_distractors)
@@ -438,3 +433,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

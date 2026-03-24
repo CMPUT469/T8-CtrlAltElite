@@ -11,10 +11,10 @@ Single metric: Weighted Outcome Score (WOS)
 
     Aggregate WOS = mean(WOS per task) × 100  → reported as a percentage.
 
-This is TESR used directly as the outcome score. Binary outcome accuracy is
-the special case where every task has optimal_steps == actual_steps == 1,
-which gives WOS == outcome_accuracy. The weighting generalises it to
-penalise inefficient multi-step solutions without needing a separate metric.
+Tool choice is intentionally not scored. If the model used the wrong tool,
+the result will be wrong and WOS captures that through E(O, Ô). The
+`functions` field in task JSONL is a reference path for log transparency
+only — it never influences scoring.
 """
 
 from __future__ import annotations
@@ -78,6 +78,59 @@ def compare_params(actual: dict, expected: dict) -> bool:
     return True
 
 
+def compare_outcome_across_steps(
+    step_results: list[Any],
+    expected_outcome: dict,
+    tolerance: float = 0.01,
+) -> bool:
+    """
+    Check whether all expected_outcome keys are satisfied across the
+    union of step results — without caring which step produced which value.
+
+    This supports any valid tool-call ordering the model chooses:
+      {"mean": 60.0, "final_result": 1.778151}
+    passes whether the model called mean→log or found another valid path,
+    as long as both values appear somewhere in the step results.
+
+    Strategy:
+      1. Merge all step result dicts into a single pool (later steps win
+         on key collision, so intermediate values are preserved too).
+      2. For each expected key, check the pool first, then fall back to
+         checking each step's scalar "result" key, then bare scalars.
+    """
+    # Build a merged pool of all key→value pairs emitted across steps
+    merged: dict[str, Any] = {}
+    for result in step_results:
+        if isinstance(result, dict):
+            merged.update(result)
+
+    for exp_key, exp_val in expected_outcome.items():
+        # 1. Direct key match in merged pool
+        if exp_key in merged and compare_values(merged[exp_key], exp_val, tolerance):
+            continue
+
+        # 2. Scan each step result for a matching value
+        found = False
+        for result in step_results:
+            if isinstance(result, dict):
+                # Tools often return {"result": <value>} — check that key
+                if "result" in result and compare_values(result["result"], exp_val, tolerance):
+                    found = True
+                    break
+                # Also check all values in the dict
+                if any(compare_values(v, exp_val, tolerance) for v in result.values()):
+                    found = True
+                    break
+            elif compare_values(result, exp_val, tolerance):
+                found = True
+                break
+
+        if not found:
+            return False
+
+    return True
+
+
 def extract_result_value(tool_result: Any) -> Any:
     """
     Normalise an MCP tool result to a plain Python value.
@@ -111,9 +164,6 @@ def extract_result_value(tool_result: Any) -> Any:
 def serialize_tool_result(tool_result: Any) -> str:
     """
     Stable string serialization of an MCP tool result for logging.
-
-    Tries structured approaches first (model_dump, content attr),
-    falls back to repr() as a last resort.
     """
     try:
         if hasattr(tool_result, "model_dump"):
@@ -153,17 +203,14 @@ def wos(outcome: bool, optimal_steps: int, actual_steps: int) -> float:
 
 def calculate_metrics(details: list[dict], totals: dict) -> dict:
     """
-    Compute WOS overall and per level, plus auxiliary diagnosis counts.
+    Compute WOS overall and per level, plus no_tool_call count for diagnosis.
 
-    totals keys : total_tests, correct_result, correct_function,
-                  correct_params, no_tool_call, wrong_tool
+    totals keys : total_tests, correct_result, no_tool_call
     detail keys : correct_result, optimal_steps, actual_steps, level
     """
     n   = totals["total_tests"]
     ntc = totals["no_tool_call"]
-    wt  = totals["wrong_tool"]
 
-    # WOS — overall and per level
     scores: dict[str, list[float]] = {"L1": [], "L2": [], "L3": [], "all": []}
     for d in details:
         s = wos(
@@ -179,16 +226,15 @@ def calculate_metrics(details: list[dict], totals: dict) -> dict:
         return round(sum(lst) / len(lst) * 100, 2) if lst else 0.0
 
     return {
-        # ── Single primary metric ─────────────────────────────────────
-        "wos":          _pct(scores["all"]),   # Weighted Outcome Score %
+        # ── Primary metric ────────────────────────────────────────────
+        "wos":          _pct(scores["all"]),
         "wos_l1":       _pct(scores["L1"]),
         "wos_l2":       _pct(scores["L2"]),
         "wos_l3":       _pct(scores["L3"]),
 
-        # ── Counts (for diagnosing failure mode, not scored) ──────────
+        # ── Diagnosis count (not scored) ──────────────────────────────
         "total_tasks":  n,
-        "no_tool_call": ntc,   # model never tried → wos=0
-        "wrong_tool":   wt,    # tried wrong tool  → wos=0
+        "no_tool_call": ntc,
     }
 
 
@@ -204,5 +250,4 @@ def print_report(metrics: dict, model: str, dataset: str = "") -> None:
     print(f"  WOS  L3          : {metrics['wos_l3']}%")
     print(f"  total tasks      : {metrics['total_tasks']}")
     print(f"  no tool call     : {metrics['no_tool_call']}")
-    print(f"  wrong tool       : {metrics['wrong_tool']}")
     print(sep + "\n")
