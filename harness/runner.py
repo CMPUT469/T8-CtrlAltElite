@@ -274,8 +274,9 @@ async def run_evaluation(
                     "content": json.dumps(result_value),
                 })
 
-                # For L1/L2, one step is enough — break after first tool call
-                if level in ("L1", "L2"):
+                # For L1, one step is always enough.
+                # For L2, break only when the task is single-step.
+                if level == "L1" or (level == "L2" and optimal_steps <= 1):
                     break
 
             # ── Outcome evaluation ────────────────────────────────────────
