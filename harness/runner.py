@@ -82,6 +82,8 @@ DATASETS: dict[str, dict] = {
     "finance": {
         "tasks": {
             "L1": "datasets/finance/tasks_l1.jsonl",
+            "L2": "datasets/finance/tasks_l2.jsonl",
+            "L3": "datasets/finance/tasks_l3.jsonl",
         },
         "server": "mcp-server/main.py",
     },
@@ -147,7 +149,7 @@ async def run_evaluation(
 ) -> dict:
     tasks = load_tasks(dataset, levels, limit)
     if not tasks:
-        print("No tasks loaded — check dataset paths.")
+        print("No tasks loaded - check dataset paths.")
         return {}
 
     print(f"\nLoaded {len(tasks)} tasks from {dataset} ({', '.join(levels)})")
@@ -165,7 +167,7 @@ async def run_evaluation(
     details: list[dict] = []
 
     async with mcp_session(server_script) as (session, all_tools):
-        print(f"MCP server ready — {len(all_tools)} tools available\n")
+        print(f"MCP server ready - {len(all_tools)} tools available\n")
 
         for i, task in enumerate(tasks, 1):
             task_id = task.get("id", f"task_{i}")
@@ -274,7 +276,7 @@ async def run_evaluation(
                     "content": json.dumps(result_value),
                 })
 
-                # For L1/L2, one step is enough — break after first tool call
+                # For L1/L2, one step is enough - break after first tool call
                 if level in ("L1", "L2"):
                     break
 
@@ -305,7 +307,7 @@ async def run_evaluation(
                     totals["correct_result"] += 1
 
             details.append(record)
-            status = "✓" if record["correct_result"] else "✗"
+            status = "OK" if record["correct_result"] else "X"
             wos_val = wos(
                 outcome=record["correct_result"],
                 optimal_steps=record["optimal_steps"],
@@ -334,11 +336,12 @@ async def run_evaluation(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def save_results(output: dict) -> Path:
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     model_safe = output["model"].replace(":", "_").replace("/", "_")
     dataset = output["dataset"]
+    dataset_dir = RESULTS_DIR / dataset
+    dataset_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = RESULTS_DIR / f"{dataset}_{model_safe}_{ts}.json"
+    path = dataset_dir / f"{dataset}_{model_safe}_{ts}.json"
     with open(path, "w") as f:
         json.dump(output, f, indent=2)
     return path
@@ -423,7 +426,7 @@ def main():
         with open(path, "w") as f:
             json.dump(output, f, indent=2)
 
-    print(f"Results saved → {path}\n")
+    print(f"Results saved -> {path}\n")
 
     # Cloud logging — silently skipped if SUPABASE_URL/KEY not in .env
     try:
