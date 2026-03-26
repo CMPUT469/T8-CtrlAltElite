@@ -85,6 +85,9 @@ pip install -r requirements-eval.txt
 # All levels, standard mode (all tools visible)
 python -m harness.runner --dataset jefferson --model qwen2.5:7b
 
+# Stage-1 Jefferson variant
+python -m harness.runner --dataset jefferson_stage1 --model qwen2.5:7b
+
 # L1 only, oracle mode (only the correct tool exposed)
 python -m harness.runner --dataset jefferson --model qwen2.5:7b --level L1 --oracle
 
