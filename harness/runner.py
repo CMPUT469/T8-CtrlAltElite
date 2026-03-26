@@ -109,6 +109,14 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
+    "finance_stage0": {
+        "tasks": {
+            "L1": "datasets/finance_stage0/tasks_l1.jsonl",
+            "L2": "datasets/finance_stage0/tasks_l2.jsonl",
+            "L3": "datasets/finance_stage0/tasks_l3.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
 }
 
 RESULTS_DIR = Path("results")
@@ -141,6 +149,73 @@ def load_tasks(dataset: str, levels: list[str], limit: Optional[int]) -> list[di
     return tasks
 
 
+def _find_subsequence_indices(actual: list[str], expected: list[str]) -> list[int] | None:
+    """
+    Return indices in `actual` that match `expected` in-order as a subsequence.
+    Returns None if no full subsequence match exists.
+    """
+    if not expected:
+        return []
+    indices: list[int] = []
+    exp_i = 0
+    for act_i, fn in enumerate(actual):
+        if fn == expected[exp_i]:
+            indices.append(act_i)
+            exp_i += 1
+            if exp_i == len(expected):
+                return indices
+    return None
+
+
+def _matched_prefix_length(actual: list[str], expected: list[str]) -> int:
+    """
+    Count how many expected functions have been matched in-order so far.
+
+    This is used while the run is still in progress so tool exposure only
+    advances after the model actually completes the current expected step.
+    """
+    exp_i = 0
+    for fn in actual:
+        if exp_i < len(expected) and fn == expected[exp_i]:
+            exp_i += 1
+    return exp_i
+
+
+def _compare_step_params(
+    called_params: list[dict],
+    expected_params: object,
+    matched_indices: list[int] | None = None,
+) -> bool:
+    """
+    Compare expected params for single-step and multi-step tasks.
+
+    - dict: compare against the first matched call (or first call if no match passed)
+    - list[dict]: compare expected per-step params against matched call indices
+    """
+    if expected_params is None:
+        return True
+    target_indices = matched_indices or []
+    if isinstance(expected_params, dict):
+        idx = target_indices[0] if target_indices else 0
+        first = called_params[idx] if idx < len(called_params) else {}
+        return compare_params(first, expected_params)
+    if isinstance(expected_params, list):
+        if not target_indices:
+            target_indices = list(range(len(called_params)))
+        if len(target_indices) < len(expected_params):
+            return False
+        for i, exp in enumerate(expected_params):
+            if not isinstance(exp, dict):
+                return False
+            idx = target_indices[i]
+            if idx >= len(called_params):
+                return False
+            if not compare_params(called_params[idx], exp):
+                return False
+        return True
+    return False
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Core evaluation loop
 # ──────────────────────────────────────────────────────────────────────────────
@@ -168,6 +243,7 @@ async def run_evaluation(
         correct_result=0,
         no_tool_call=0,
         wrong_tool=0,
+        wrong_params=0,
     )
     details: list[dict] = []
 
@@ -224,6 +300,8 @@ async def run_evaluation(
             step_results: list = []
 
             for step in range(max_steps):
+                # Advance the exposed "relevant" tool only after the matching
+                # expected step has actually been completed in-order.
                 tools_for_step = filter_tools_for_task(
                     all_tools,
                     relevant_names=ref_functions if ref_functions else [],
@@ -247,7 +325,7 @@ async def run_evaluation(
 
                 record["actual_steps"] += 1
                 record["actual_functions"].append(tool_call.function_name)
-                record["actual_params"]  = tool_call.arguments
+                record["actual_params"] = tool_call.arguments
                 record["call_source"]    = tool_call.call_source
 
                 try:

@@ -95,6 +95,8 @@ def log_run(
             "total_tasks":  metrics.get("total_tasks"),
             "no_tool_call": metrics.get("no_tool_call"),
             "wrong_tool":   metrics.get("wrong_tool"),
+            # Keep wrong_params queryable at the top level for dashboards.
+            "wrong_params": metrics.get("wrong_params"),
 
             "raw_metrics":            metrics,
         }

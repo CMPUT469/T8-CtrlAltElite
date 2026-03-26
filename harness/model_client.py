@@ -204,6 +204,20 @@ def _parse_fallback_json(text: str) -> Optional[dict]:
     return None
 
 
+def _load_models_yaml(configs_path: str) -> dict[str, Any]:
+    """Load model registry YAML with a helpful dependency error if missing."""
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Missing dependency 'pyyaml'. Install it with "
+            "'pip install pyyaml' or 'pip install -r requirements-eval.txt'."
+        ) from exc
+
+    with open(configs_path) as f:
+        return yaml.safe_load(f) or {}
+
+
 def client_from_yaml(model_name: str, configs_path: str = "configs/models.yaml") -> ModelClient:
     """
     Load a ModelClient by model name from configs/models.yaml.
@@ -218,9 +232,7 @@ def client_from_yaml(model_name: str, configs_path: str = "configs/models.yaml")
             base_url: http://eureka-node-01:8000/v1
             api_key: token-abc123
     """
-    import yaml  # optional dep; only needed when using this helper
-    with open(configs_path) as f:
-        data = yaml.safe_load(f)
+    data = _load_models_yaml(configs_path)
     for entry in data.get("models", []):
         if entry["name"] == model_name:
             return ModelClient(ModelConfig.from_dict(entry))
@@ -278,14 +290,11 @@ def resolve_model_config(
 
 
 def _find_model_entry(model_name: str, configs_path: str) -> Optional[dict[str, Any]]:
-    import yaml
-
     path = Path(configs_path)
     if not path.exists():
         return None
 
-    with open(path) as f:
-        data = yaml.safe_load(f) or {}
+    data = _load_models_yaml(str(path))
 
     for entry in data.get("models", []):
         if entry.get("name") == model_name:

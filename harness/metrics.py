@@ -1,13 +1,13 @@
 """
 Metrics for outcome-based evaluation.
 
-Single metric: Weighted Outcome Score (WOS)
+Primary metric: Weighted Outcome Score (WOS)
 
-    WOS(task) = E(O, Ô) × (S_optimal / S_actual)
+    WOS(task) = outcome * (optimal_steps / actual_steps)
 
-    • Wrong answer or no tool call  → 0.0
-    • Correct, optimal path         → 1.0
-    • Correct, one redundant call   → S_optimal / S_actual  (e.g. 0.67)
+- Wrong answer or no tool call -> 0.0
+- Correct, optimal path      -> 1.0
+- Correct, extra calls       -> optimal_steps / actual_steps
 
     Aggregate WOS = mean(WOS per task) × 100  → reported as a percentage.
 
@@ -20,6 +20,7 @@ Tool choice is intentionally not scored. If the model used the wrong tool,
 the result will be wrong and WOS captures that through E(O, Ô). The
 `functions` field in task JSONL is a reference path for log transparency
 only — it never influences scoring.
+Aggregate WOS is reported as a percentage.
 """
 
 from __future__ import annotations
@@ -28,19 +29,13 @@ import json
 from typing import Any
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Value comparison
-# ──────────────────────────────────────────────────────────────────────────────
-
 def compare_values(actual: Any, expected: Any, tolerance: float = 0.01) -> bool:
     """
     Deep equality with numeric tolerance.
 
-    • Numeric strings coerced to float ("3.5" == 3.5)
-    • Lists compared element-wise
-    • Dicts: expected is treated as a required subset of actual —
-      tasks only assert on fields they care about; extra keys returned
-      by the tool (e.g. p_value on a regression result) are ignored.
+    - Numeric strings are coerced to float where possible.
+    - Lists are compared element-wise.
+    - Dicts treat expected as a required subset of actual.
     """
     if actual == expected:
         return True
@@ -67,7 +62,7 @@ def compare_values(actual: Any, expected: Any, tolerance: float = 0.01) -> bool:
 def compare_params(actual: dict, expected: dict) -> bool:
     """
     Check that actual params satisfy expected params.
-    Extra keys in actual are allowed; missing required keys → False.
+    Extra keys in actual are allowed.
     """
     for key, exp_val in expected.items():
         if key not in actual:
@@ -133,8 +128,7 @@ def compare_outcome_across_steps(
 
 def extract_result_value(tool_result: Any) -> Any:
     """
-    Normalise an MCP tool result to a plain Python value.
-    JSON round-trip converts Decimal/datetime/etc to JSON-safe primitives.
+    Normalize an MCP tool result to plain Python values.
     """
     raw = None
     if hasattr(tool_result, "content"):
@@ -163,10 +157,7 @@ def extract_result_value(tool_result: Any) -> Any:
 
 def serialize_tool_result(tool_result: Any) -> str:
     """
-    Stable string serialization of an MCP tool result for logging.
-
-    Tries structured approaches first (model_dump, content attr),
-    falls back to repr() as a last resort.
+    Stable string serialization for logging.
     """
     try:
         if hasattr(tool_result, "model_dump"):
@@ -185,38 +176,27 @@ def serialize_tool_result(tool_result: Any) -> str:
         return repr(tool_result)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Weighted Outcome Score
-# ──────────────────────────────────────────────────────────────────────────────
-
 def wos(outcome: bool, optimal_steps: int, actual_steps: int) -> float:
     """
     Weighted Outcome Score for a single task.
-
-    WOS = E(O, Ô) × (S_optimal / S_actual)
     """
     if not outcome:
         return 0.0
     return min(1.0, optimal_steps / max(actual_steps, 1))
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Aggregate metrics
-# ──────────────────────────────────────────────────────────────────────────────
-
 def calculate_metrics(details: list[dict], totals: dict) -> dict:
     """
-    Compute WOS overall and per level, plus auxiliary diagnosis counts.
+    Compute WOS overall/per-level and diagnostic counts.
 
-    totals keys : total_tests, correct_result, correct_function,
-                  correct_params, no_tool_call, wrong_tool
-    detail keys : correct_result, optimal_steps, actual_steps, level
+    totals keys: total_tests, correct_result, no_tool_call,
+                 wrong_tool, wrong_params
     """
-    n   = totals["total_tests"]
+    n = totals["total_tests"]
     ntc = totals["no_tool_call"]
-    wt  = totals["wrong_tool"]
+    wt = totals["wrong_tool"]
+    wp = totals.get("wrong_params", 0)
 
-    # WOS — overall and per level
     scores: dict[str, list[float]] = {"L1": [], "L2": [], "L3": [], "all": []}
     for d in details:
         s = wos(
@@ -228,20 +208,18 @@ def calculate_metrics(details: list[dict], totals: dict) -> dict:
         scores[level].append(s)
         scores["all"].append(s)
 
-    def _pct(lst: list) -> float:
+    def _pct(lst: list[float]) -> float:
         return round(sum(lst) / len(lst) * 100, 2) if lst else 0.0
 
     return {
-        # ── Single primary metric ─────────────────────────────────────
-        "wos":          _pct(scores["all"]),   # Weighted Outcome Score %
-        "wos_l1":       _pct(scores["L1"]),
-        "wos_l2":       _pct(scores["L2"]),
-        "wos_l3":       _pct(scores["L3"]),
-
-        # ── Counts (for diagnosing failure mode, not scored) ──────────
-        "total_tasks":  n,
-        "no_tool_call": ntc,   # model never tried → wos=0
-        "wrong_tool":   wt,    # tried wrong tool  → wos=0
+        "wos": _pct(scores["all"]),
+        "wos_l1": _pct(scores["L1"]),
+        "wos_l2": _pct(scores["L2"]),
+        "wos_l3": _pct(scores["L3"]),
+        "total_tasks": n,
+        "no_tool_call": ntc,
+        "wrong_tool": wt,
+        "wrong_params": wp,
     }
 
 
@@ -258,4 +236,5 @@ def print_report(metrics: dict, model: str, dataset: str = "") -> None:
     print(f"  total tasks      : {metrics['total_tasks']}")
     print(f"  no tool call     : {metrics['no_tool_call']}")
     print(f"  wrong tool       : {metrics['wrong_tool']}")
+    print(f"  wrong params     : {metrics.get('wrong_params', 0)}")
     print(sep + "\n")

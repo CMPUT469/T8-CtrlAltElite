@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS test_runs (
     correct_result  integer,
     no_tool_call    integer,
     wrong_tool      integer,
+    -- Keep each failure mode queryable without unpacking raw_metrics.
+    wrong_params    integer,
     raw_metrics     jsonb                    -- full metrics blob for any extra fields
 );
 
