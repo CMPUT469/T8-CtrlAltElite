@@ -69,6 +69,14 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
+    "jefferson_stage1": {
+        "tasks": {
+            "L1": "datasets/jefferson_stats_stage1/tasks_l1.jsonl",
+            "L2": "datasets/jefferson_stats_stage1/tasks_l2.jsonl",
+            "L3": "datasets/jefferson_stats_stage1/tasks_l3.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
     "bfcl": {
         "tasks": {
             "L1": "datasets/bfcl_math/tasks_l1.jsonl",
@@ -228,6 +236,9 @@ async def run_evaluation(
     num_distractors: Optional[int],
     allow_fallback: bool,
 ) -> dict:
+    from harness.mcp_session import filter_tools_for_task, mcp_session
+    from harness.model_client import ModelClient
+
     tasks = load_tasks(dataset, levels, limit)
     if not tasks:
         print("No tasks loaded - check dataset paths.")
