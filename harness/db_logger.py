@@ -1,14 +1,21 @@
 """
 Supabase logging for evaluation runs.
 
+Moved to harness/ so it lives alongside the code that calls it.
+
 Usage:
     from harness.db_logger import log_run
-    log_run(output, model="qwen2.5:7b", suite="jefferson")   
+    log_run(output, model="qwen2.5:7b", suite="jefferson")
+
 Requires .env:
     SUPABASE_URL=https://xxxx.supabase.co
     SUPABASE_KEY=your-anon-or-service-key
 
 If credentials are missing, logging is silently skipped — local JSON still saves.
+
+Schema changes from original db_logger.py:
+  Replaced all metric columns with single WOS (Weighted Outcome Score).
+  Run migration_wos.sql before using.
 """
 
 from __future__ import annotations
@@ -51,12 +58,12 @@ def log_run(
     num_distractors: Optional[int] = None,
 ) -> Optional[str]:
     """
-    Upload one completed run to Supabase.
+    Upload one completed run (as returned by runner.run_evaluation) to Supabase.
 
     Args:
-        output:          dict returned by harness.runner.run_evaluation()
+        output:          the dict returned by harness.runner.run_evaluation()
         suite:           dataset name, e.g. "jefferson" or "bfcl"
-        num_distractors: distractor count used (None = standard mode)
+        num_distractors: distractor count used in this run (None = standard mode)
 
     Returns:
         run_id (uuid string) on success, None if skipped or failed.
@@ -71,28 +78,31 @@ def log_run(
     ts      = output.get("timestamp") or datetime.now(timezone.utc).isoformat()
 
     try:
+        # ── Insert run summary row ────────────────────────────────────────
         run_row = {
-            "model":            model,
-            "timestamp":        ts,
-            "test_suite":       suite,
-            "num_distractors":  num_distractors,
+            "model":                  model,
+            "timestamp":              ts,
+            "test_suite":             suite,
+            "num_distractors":        num_distractors,
 
-            # Primary metric
-            "wos":              metrics.get("wos"),
-            "wos_l1":           metrics.get("wos_l1"),
-            "wos_l2":           metrics.get("wos_l2"),
-            "wos_l3":           metrics.get("wos_l3"),
+            # Single primary metric
+            "wos":        metrics.get("wos"),
+            "wos_l1":     metrics.get("wos_l1"),
+            "wos_l2":     metrics.get("wos_l2"),
+            "wos_l3":     metrics.get("wos_l3"),
 
-            # Diagnosis
-            "total_tasks":      metrics.get("total_tasks"),
-            "no_tool_call":     metrics.get("no_tool_call"),
+            # Diagnosis counts
+            "total_tasks":  metrics.get("total_tasks"),
+            "no_tool_call": metrics.get("no_tool_call"),
+            "wrong_tool":   metrics.get("wrong_tool"),
 
-            "raw_metrics":      metrics,
+            "raw_metrics":            metrics,
         }
 
         resp   = client.table("test_runs").insert(run_row).execute()
         run_id = resp.data[0]["id"]
 
+        # ── Insert per-task detail rows ───────────────────────────────────
         if details:
             detail_rows = []
             for d in details:
@@ -103,25 +113,29 @@ def log_run(
                     except (TypeError, ValueError):
                         actual_result = str(actual_result)
 
+                incorrect_output = d.get("incorrect_output")
+                if isinstance(incorrect_output, str):
+                    incorrect_output = {"raw_text": incorrect_output}
+
                 detail_rows.append({
-                    "run_id":           run_id,
-                    "test_id":          d.get("task_id"),
-                    "level":            d.get("level"),
-                    "query":            d.get("query"),
-                    # Reference path (transparency only — not used for scoring)
-                    "ref_functions":    d.get("ref_functions"),
-                    # What the model actually did
-                    "actual_functions": d.get("actual_functions"),
-                    "actual_params":    d.get("actual_params"),
-                    "actual_result":    actual_result,
-                    "correct_result":   d.get("correct_result"),
-                    "optimal_steps":    d.get("optimal_steps"),
-                    "actual_steps":     d.get("actual_steps"),
-                    "error":            d.get("error"),
-                    "call_source":      d.get("call_source"),
-                    "raw_model_output": d.get("raw_model_output"),
-                    "tool_result":      d.get("tool_result"),
-                    "expected_outcome": d.get("expected_outcome"),
+                    "run_id":            run_id,
+                    "test_id":           d.get("task_id"),
+                    "level":             d.get("level"),
+                    "query":             d.get("query"),
+                    "expected_function": d.get("expected_function"),
+                    "actual_function":   d.get("actual_function"),
+                    "expected_params":   d.get("expected_params"),
+                    "actual_params":     d.get("actual_params"),
+                    "actual_result":     actual_result,
+                    "correct_result":    d.get("correct_result"),
+                    "optimal_steps":     d.get("optimal_steps"),
+                    "actual_steps":      d.get("actual_steps"),
+                    "error":             d.get("error"),
+                    "incorrect_output":  incorrect_output,
+                    "call_source":       d.get("call_source"),
+                    "raw_model_output":  d.get("raw_model_output"),
+                    "tool_result":       d.get("tool_result"),
+                    "expected_outcome":  d.get("expected_outcome"),
                 })
 
             client.table("test_details").insert(detail_rows).execute()

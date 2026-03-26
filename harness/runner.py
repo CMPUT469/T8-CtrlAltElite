@@ -79,9 +79,9 @@ DATASETS: dict[str, dict] = {
     },
      "bfcl-v2": {
         "tasks": {
-            "L1": "datasets/bfcl/tasks_l1_v2.jsonl",
-            "L2": "datasets/bfcl/tasks_l2_v2.jsonl",
-            "L3": "datasets/bfcl/tasks_l3_v2.jsonl",
+            "L1": "datasets/bfcl_math/tasks_l1_v2.jsonl",
+            "L2": "datasets/bfcl_math/tasks_l2_v2.jsonl",
+            "L3": "datasets/bfcl_math/tasks_l3_v2.jsonl",
         },
         "server": "mcp-server/main.py",
     },
