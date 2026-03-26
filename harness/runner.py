@@ -110,20 +110,6 @@ RESULTS_DIR = Path("results")
 # Task loading
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _normalize_bfcl_task(task: dict) -> dict:
-    """Convert BFCL task format to runner's standard format."""
-    query = task["question"][0][0]["content"]
-    expected_call = task["expected_call"]
-    return {
-        "id": task.get("id"),
-        "level": task.get("level", "L1"),
-        "query": query,
-        "functions": [expected_call["name"]],
-        "expected_params": expected_call.get("arguments", {}),
-        "expected_outcome": {"result": task["expected_result"]},
-    }
-
-
 def load_tasks(dataset: str, levels: list[str], limit: Optional[int]) -> list[dict]:
     registry = DATASETS[dataset]["tasks"]
     tasks = []
@@ -141,8 +127,6 @@ def load_tasks(dataset: str, levels: list[str], limit: Optional[int]) -> list[di
                 if line:
                     t = json.loads(line)
                     t.setdefault("level", level)
-                    if dataset in ("bfcl", "postgres") and "question" in t:
-                        t = _normalize_bfcl_task(t)
                     tasks.append(t)
     if limit:
         tasks = tasks[:limit]
@@ -175,6 +159,7 @@ async def run_evaluation(
         total_tests=len(tasks),
         correct_result=0,
         no_tool_call=0,
+        wrong_tool=0,
     )
     details: list[dict] = []
 
@@ -233,7 +218,7 @@ async def run_evaluation(
             for step in range(max_steps):
                 tools_for_step = filter_tools_for_task(
                     all_tools,
-                    relevant_names=ref_functions or list({t["function"]["name"] for t in all_tools}),
+                    relevant_names=ref_functions if ref_functions else [],
                     num_distractors=num_distractors,
                 )
 
@@ -291,7 +276,11 @@ async def run_evaluation(
                 if level in ("L1", "L2"):
                     break
 
-            # ── Outcome evaluation (no routing checks) ────────────────────
+            # ── Outcome evaluation ────────────────────────────────────────
+            if record["actual_functions"]:
+                if ref_functions and not any(fn in ref_functions for fn in record["actual_functions"]):
+                    totals["wrong_tool"] += 1
+                        
             if step_results:
                 expected_outcome          = task.get("expected_outcome")
                 record["expected_outcome"] = expected_outcome
