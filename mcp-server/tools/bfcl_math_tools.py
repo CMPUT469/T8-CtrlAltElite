@@ -155,4 +155,19 @@ def register_tools(mcp):
         except (TypeError, ValueError) as e:
             return {"error": str(e)}
     
-    print("Registered 14 BFCL Math Tools")
+    @mcp.tool()
+    def logarithm(number: float, base: float = math.e) -> Dict:
+        """
+        Calculate the logarithm of a number.
+        Defaults to natural log (base e). Pass base=10 for log10, base=2 for log2.
+        """
+        try:
+            if number <= 0:
+                return {"error": "Number must be positive"}
+            if base <= 0 or base == 1:
+                return {"error": "Base must be positive and not equal to 1"}
+            return {"result": round(math.log(number, base), 6)}
+        except (TypeError, ValueError) as e:
+            return {"error": str(e)}
+
+    print("Registered 15 BFCL Math Tools")

@@ -9,6 +9,17 @@ Primary metric: Weighted Outcome Score (WOS)
 - Correct, optimal path      -> 1.0
 - Correct, extra calls       -> optimal_steps / actual_steps
 
+    Aggregate WOS = mean(WOS per task) × 100  → reported as a percentage.
+
+This is TESR used directly as the outcome score. Binary outcome accuracy is
+the special case where every task has optimal_steps == actual_steps == 1,
+which gives WOS == outcome_accuracy. The weighting generalises it to
+penalise inefficient multi-step solutions without needing a separate metric.
+
+Tool choice is intentionally not scored. If the model used the wrong tool,
+the result will be wrong and WOS captures that through E(O, Ô). The
+`functions` field in task JSONL is a reference path for log transparency
+only — it never influences scoring.
 Aggregate WOS is reported as a percentage.
 """
 
@@ -64,6 +75,54 @@ def compare_params(actual: dict, expected: dict) -> bool:
                 return False
         elif not compare_values(act_val, exp_val):
             return False
+    return True
+
+
+def compare_outcome_across_steps(
+    step_results: list[Any],
+    expected_outcome: dict,
+    tolerance: float = 0.01,
+) -> bool:
+    """
+    Check whether all expected_outcome keys are satisfied across the
+    union of step results — without caring which step produced which value.
+
+    This supports any valid tool-call ordering the model chooses:
+      {"mean": 60.0, "final_result": 1.778151}
+    passes whether the model called mean→log or found another valid path,
+    as long as both values appear somewhere in the step results.
+
+    Strategy:
+      1. Merge all step result dicts into a single pool (later steps win
+         on key collision, so intermediate values are preserved too).
+      2. For each expected key, check the pool first, then fall back to
+         checking each step's scalar "result" key, then bare scalars.
+    """
+    # Build a merged pool of all key→value pairs emitted across steps
+    merged: dict[str, Any] = {}
+    for result in step_results:
+        if isinstance(result, dict):
+            merged.update(result)
+
+    for exp_key, exp_val in expected_outcome.items():
+        # 1. Direct key match in merged pool
+        if exp_key in merged and compare_values(merged[exp_key], exp_val, tolerance):
+            continue
+
+        # 2. Scan each step result for a matching value
+        found = False
+        for result in step_results:
+            if isinstance(result, dict):
+                if "result" in result and compare_values(result["result"], exp_val, tolerance):
+                    found = True
+                    break
+            elif compare_values(result, exp_val, tolerance):
+                found = True
+                break
+
+        if not found:
+            return False
+
     return True
 
 
