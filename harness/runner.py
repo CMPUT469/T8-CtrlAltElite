@@ -69,11 +69,11 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
-    "jefferson_stage1": {
+    "jefferson-v2": {
         "tasks": {
-            "L1": "datasets/jefferson_stats_stage1/tasks_l1.jsonl",
-            "L2": "datasets/jefferson_stats_stage1/tasks_l2.jsonl",
-            "L3": "datasets/jefferson_stats_stage1/tasks_l3.jsonl",
+            "L1": "datasets/jefferson_stats/tasks_l1_v2.jsonl",
+            "L2": "datasets/jefferson_stats/tasks_l2_v2.jsonl",
+            "L3": "datasets/jefferson_stats/tasks_l3_v2.jsonl",
         },
         "server": "mcp-server/main.py",
     },
@@ -85,7 +85,7 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
-     "bfcl-v2": {
+    "bfcl-v2": {
         "tasks": {
             "L1": "datasets/bfcl_math/tasks_l1_v2.jsonl",
             "L2": "datasets/bfcl_math/tasks_l2_v2.jsonl",
@@ -109,19 +109,19 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
+    "finance-v2": {
+        "tasks": {
+            "L1": "datasets/finance/tasks_l1_v2.jsonl",
+            "L2": "datasets/finance/tasks_l2_v2.jsonl",
+            "L3": "datasets/finance/tasks_l3_v2.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
     "finance": {
         "tasks": {
             "L1": "datasets/finance/tasks_l1.jsonl",
             "L2": "datasets/finance/tasks_l2.jsonl",
             "L3": "datasets/finance/tasks_l3.jsonl",
-        },
-        "server": "mcp-server/main.py",
-    },
-    "finance_stage0": {
-        "tasks": {
-            "L1": "datasets/finance_stage0/tasks_l1.jsonl",
-            "L2": "datasets/finance_stage0/tasks_l2.jsonl",
-            "L3": "datasets/finance_stage0/tasks_l3.jsonl",
         },
         "server": "mcp-server/main.py",
     },
