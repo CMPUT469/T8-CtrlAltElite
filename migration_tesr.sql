@@ -7,7 +7,9 @@ ALTER TABLE test_runs
     ADD COLUMN IF NOT EXISTS wos      float,
     ADD COLUMN IF NOT EXISTS wos_l1   float,
     ADD COLUMN IF NOT EXISTS wos_l2   float,
-    ADD COLUMN IF NOT EXISTS wos_l3   float;
+    ADD COLUMN IF NOT EXISTS wos_l3   float,
+    -- Preserve wrong_params as a first-class diagnostic counter.
+    ADD COLUMN IF NOT EXISTS wrong_params integer;
 
 -- Drop all old metric columns
 ALTER TABLE test_runs

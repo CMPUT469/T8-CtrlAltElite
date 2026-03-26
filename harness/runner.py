@@ -95,6 +95,14 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
+    "finance_stage0": {
+        "tasks": {
+            "L1": "datasets/finance_stage0/tasks_l1.jsonl",
+            "L2": "datasets/finance_stage0/tasks_l2.jsonl",
+            "L3": "datasets/finance_stage0/tasks_l3.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
 }
 
 RESULTS_DIR = Path("results")
@@ -143,6 +151,73 @@ def load_tasks(dataset: str, levels: list[str], limit: Optional[int]) -> list[di
     return tasks
 
 
+def _find_subsequence_indices(actual: list[str], expected: list[str]) -> list[int] | None:
+    """
+    Return indices in `actual` that match `expected` in-order as a subsequence.
+    Returns None if no full subsequence match exists.
+    """
+    if not expected:
+        return []
+    indices: list[int] = []
+    exp_i = 0
+    for act_i, fn in enumerate(actual):
+        if fn == expected[exp_i]:
+            indices.append(act_i)
+            exp_i += 1
+            if exp_i == len(expected):
+                return indices
+    return None
+
+
+def _matched_prefix_length(actual: list[str], expected: list[str]) -> int:
+    """
+    Count how many expected functions have been matched in-order so far.
+
+    This is used while the run is still in progress so tool exposure only
+    advances after the model actually completes the current expected step.
+    """
+    exp_i = 0
+    for fn in actual:
+        if exp_i < len(expected) and fn == expected[exp_i]:
+            exp_i += 1
+    return exp_i
+
+
+def _compare_step_params(
+    called_params: list[dict],
+    expected_params: object,
+    matched_indices: list[int] | None = None,
+) -> bool:
+    """
+    Compare expected params for single-step and multi-step tasks.
+
+    - dict: compare against the first matched call (or first call if no match passed)
+    - list[dict]: compare expected per-step params against matched call indices
+    """
+    if expected_params is None:
+        return True
+    target_indices = matched_indices or []
+    if isinstance(expected_params, dict):
+        idx = target_indices[0] if target_indices else 0
+        first = called_params[idx] if idx < len(called_params) else {}
+        return compare_params(first, expected_params)
+    if isinstance(expected_params, list):
+        if not target_indices:
+            target_indices = list(range(len(called_params)))
+        if len(target_indices) < len(expected_params):
+            return False
+        for i, exp in enumerate(expected_params):
+            if not isinstance(exp, dict):
+                return False
+            idx = target_indices[i]
+            if idx >= len(called_params):
+                return False
+            if not compare_params(called_params[idx], exp):
+                return False
+        return True
+    return False
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Core evaluation loop
 # ──────────────────────────────────────────────────────────────────────────────
@@ -171,6 +246,7 @@ async def run_evaluation(
         correct_result=0,
         no_tool_call=0,
         wrong_tool=0,
+        wrong_params=0,
     )
     details: list[dict] = []
 
@@ -181,10 +257,9 @@ async def run_evaluation(
             task_id = task.get("id", f"task_{i}")
             query = task["query"]
             level = task.get("level", "L1")
-            # L3 tasks may list multiple functions; L1/L2 use a single string
-            expected_fn = task.get("function") or task.get("functions", ["?"])[0]
-            # For L3, optimal_steps = number of listed functions
-            optimal_steps = len(task["functions"]) if "functions" in task else 1
+            expected_functions = task.get("functions") or [task.get("function", "?")]
+            expected_fn = expected_functions[0]
+            optimal_steps = len(expected_functions)
 
             print(f"[{i}/{len(tasks)}] {level} | {task_id}: {query[:65]}...")
 
@@ -193,9 +268,14 @@ async def run_evaluation(
                 "level": level,
                 "query": query,
                 "expected_function": expected_fn,
+                "expected_functions": expected_functions,
+                "expected_params": task.get("expected_params"),
                 "actual_function": None,
                 "actual_params": None,
                 "actual_result": None,
+                "called_functions": [],
+                "called_params": [],
+                "params_ok": None,
                 "correct_result": False,
                 "optimal_steps": optimal_steps,
                 "actual_steps": 0,
@@ -224,9 +304,18 @@ async def run_evaluation(
             step_results = []
 
             for step in range(max_steps):
+                # Advance the exposed "relevant" tool only after the matching
+                # expected step has actually been completed in-order.
+                matched_prefix = _matched_prefix_length(
+                    record.get("called_functions", []),
+                    expected_functions,
+                )
+                expected_step_fn = expected_functions[
+                    min(matched_prefix, len(expected_functions) - 1)
+                ]
                 tools_for_step = filter_tools_for_task(
                     all_tools,
-                    relevant_name=expected_fn,
+                    relevant_name=expected_step_fn,
                     num_distractors=num_distractors,
                 )
 
@@ -249,6 +338,8 @@ async def run_evaluation(
                 record["actual_steps"] += 1
                 record["actual_function"] = tool_call.function_name
                 record["actual_params"] = tool_call.arguments
+                record["called_functions"].append(tool_call.function_name)
+                record["called_params"].append(tool_call.arguments)
                 record["call_source"] = tool_call.call_source
 
                 # Execute the tool
@@ -290,7 +381,12 @@ async def run_evaluation(
                     break
 
             # ── Outcome evaluation ────────────────────────────────────────
-            if record["actual_function"] and record["actual_function"] != expected_fn:
+            matched_indices = _find_subsequence_indices(
+                record.get("called_functions", []),
+                expected_functions,
+            )
+            fn_sequence_ok = matched_indices is not None
+            if record["actual_steps"] > 0 and not fn_sequence_ok:
                 totals["wrong_tool"] += 1
 
             if step_results:
@@ -298,15 +394,22 @@ async def run_evaluation(
                 expected_outcome = task.get("expected_outcome")
                 record["expected_outcome"] = expected_outcome
                 expected_params = task.get("expected_params")
-                fn_ok = record["actual_function"] == expected_fn
-                params_ok = True
-                if expected_params is not None:
-                    params_ok = compare_params(
-                        record.get("actual_params") or {},
-                        expected_params,
-                    )
+                fn_ok = fn_sequence_ok
+                params_ok = _compare_step_params(
+                    record.get("called_params", []),
+                    expected_params,
+                    matched_indices=matched_indices,
+                )
+                record["params_ok"] = params_ok
+                if expected_params is not None and not params_ok:
+                    totals["wrong_params"] += 1
                 if expected_outcome is not None:
-                    outcome_ok = compare_values(step_results[-1], expected_outcome)
+                    outcome_ok = (
+                        compare_values(step_results[-1], expected_outcome)
+                        and fn_ok
+                        and params_ok
+                        and record.get("error") is None
+                    )
                 else:
                     # No fixed outcome: score on correct tool routing + params.
                     outcome_ok = fn_ok and params_ok and record.get("error") is None
@@ -322,7 +425,8 @@ async def run_evaluation(
                 optimal_steps=record["optimal_steps"],
                 actual_steps=record["actual_steps"],
             )
-            print(f"  {status}  fn={record['actual_function'] or 'none'} | "
+            chain = "->".join(record.get("called_functions", [])) or "none"
+            print(f"  {status}  fn={chain} | "
                   f"steps={record['actual_steps']}/{record['optimal_steps']} | "
                   f"wos={wos_val:.2f}")
 
