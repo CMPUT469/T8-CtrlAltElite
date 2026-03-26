@@ -79,6 +79,14 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
+    "postgres-v2": {
+        "tasks": {
+            "L1": "datasets/postgres/tasks_l1_v2.jsonl",
+            "L2": "datasets/postgres/tasks_l2_v2.jsonl",
+            "L3": "datasets/postgres/tasks_l3_v2.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
     "finance": {
         "tasks": {
             "L1": "datasets/finance/tasks_l1.jsonl",
@@ -345,8 +353,9 @@ async def run_evaluation(
                     "content": json.dumps(result_value),
                 })
 
-                # For L1/L2, one step is enough - break after first tool call
-                if level in ("L1", "L2"):
+                # For L1, one step is always enough.
+                # For L2, break only when the task is single-step.
+                if level == "L1" or (level == "L2" and optimal_steps <= 1):
                     break
 
             # ── Outcome evaluation ────────────────────────────────────────
