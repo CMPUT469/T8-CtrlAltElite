@@ -169,6 +169,20 @@ def _find_subsequence_indices(actual: list[str], expected: list[str]) -> list[in
     return None
 
 
+def _matched_prefix_length(actual: list[str], expected: list[str]) -> int:
+    """
+    Count how many expected functions have been matched in-order so far.
+
+    This is used while the run is still in progress so tool exposure only
+    advances after the model actually completes the current expected step.
+    """
+    exp_i = 0
+    for fn in actual:
+        if exp_i < len(expected) and fn == expected[exp_i]:
+            exp_i += 1
+    return exp_i
+
+
 def _compare_step_params(
     called_params: list[dict],
     expected_params: object,
@@ -290,7 +304,15 @@ async def run_evaluation(
             step_results = []
 
             for step in range(max_steps):
-                expected_step_fn = expected_functions[min(step, len(expected_functions) - 1)]
+                # Advance the exposed "relevant" tool only after the matching
+                # expected step has actually been completed in-order.
+                matched_prefix = _matched_prefix_length(
+                    record.get("called_functions", []),
+                    expected_functions,
+                )
+                expected_step_fn = expected_functions[
+                    min(matched_prefix, len(expected_functions) - 1)
+                ]
                 tools_for_step = filter_tools_for_task(
                     all_tools,
                     relevant_name=expected_step_fn,
