@@ -1,6 +1,7 @@
 import unittest
 
 from harness.runner import (
+    DATASETS,
     _compare_step_params,
     _find_subsequence_indices,
     _matched_prefix_length,
@@ -58,6 +59,19 @@ class CompareStepParamsTests(unittest.TestCase):
         called = [{"ticker": "AAPL"}]
         expected = [{"ticker": "AAPL"}, {"ticker": "MSFT"}]
         self.assertFalse(_compare_step_params(called, expected, matched_indices=[0]))
+
+
+class DatasetRegistryTests(unittest.TestCase):
+    def test_jefferson_stage1_dataset_is_registered_for_all_levels(self):
+        self.assertIn("jefferson_stage1", DATASETS)
+        self.assertEqual(
+            DATASETS["jefferson_stage1"]["tasks"],
+            {
+                "L1": "datasets/jefferson_stats_stage1/tasks_l1.jsonl",
+                "L2": "datasets/jefferson_stats_stage1/tasks_l2.jsonl",
+                "L3": "datasets/jefferson_stats_stage1/tasks_l3.jsonl",
+            },
+        )
 
 
 if __name__ == "__main__":

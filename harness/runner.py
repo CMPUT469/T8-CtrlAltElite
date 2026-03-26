@@ -48,8 +48,6 @@ from harness.metrics import (
     serialize_tool_result,
     wos,
 )
-from harness.mcp_session import filter_tools_for_task, mcp_session
-from harness.model_client import ModelClient, resolve_model_config
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Dataset registry
@@ -62,6 +60,14 @@ DATASETS: dict[str, dict] = {
             "L1": "datasets/jefferson_stats/tasks_l1.jsonl",
             "L2": "datasets/jefferson_stats/tasks_l2.jsonl",
             "L3": "datasets/jefferson_stats/tasks_l3.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
+    "jefferson_stage1": {
+        "tasks": {
+            "L1": "datasets/jefferson_stats_stage1/tasks_l1.jsonl",
+            "L2": "datasets/jefferson_stats_stage1/tasks_l2.jsonl",
+            "L3": "datasets/jefferson_stats_stage1/tasks_l3.jsonl",
         },
         "server": "mcp-server/main.py",
     },
@@ -230,6 +236,9 @@ async def run_evaluation(
     num_distractors: Optional[int],
     allow_fallback: bool,
 ) -> dict:
+    from harness.mcp_session import filter_tools_for_task, mcp_session
+    from harness.model_client import ModelClient
+
     tasks = load_tasks(dataset, levels, limit)
     if not tasks:
         print("No tasks loaded - check dataset paths.")
@@ -497,6 +506,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main():
+    from harness.model_client import resolve_model_config
+
     args = _build_parser().parse_args()
     model_cfg = resolve_model_config(
         args.model,
