@@ -77,6 +77,14 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
+     "bfcl-v2": {
+        "tasks": {
+            "L1": "datasets/bfcl/tasks_l1_v2.jsonl",
+            "L2": "datasets/bfcl/tasks_l2_v2.jsonl",
+            "L3": "datasets/bfcl/tasks_l3_v2.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
     "postgres": {
         "tasks": {
             "L1": "datasets/postgres/tasks_l1.jsonl",
@@ -433,4 +441,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
