@@ -89,18 +89,13 @@ class ModelClient:
     # Public API
     # ------------------------------------------------------------------
 
-    def chat(
-        self,
-        messages: list[dict],
-        tools: list[dict],
-        tool_choice: Any = "auto",
-    ) -> Any:
+    def chat(self, messages: list[dict], tools: list[dict]) -> Any:
         """Raw chat completion — returns the OpenAI response object."""
         return self._client.chat.completions.create(
             model=self.config.name,
             messages=messages,
             tools=tools,
-            tool_choice=tool_choice,
+            tool_choice="auto",
         )
 
     def get_tool_call(
