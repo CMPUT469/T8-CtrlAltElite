@@ -101,7 +101,11 @@ def _load_sweep_from_disk(dataset: str, model: str, distractor_levels: list) -> 
     model_safe = model.replace(":", "_").replace("/", "_")
     found = []
     pattern = f"{dataset}_{model_safe}_*.json"
-    matches = sorted(RESULTS_DIR.glob(pattern), reverse=True)
+    dataset_dir = RESULTS_DIR / dataset
+    matches = sorted(dataset_dir.glob(pattern), reverse=True) if dataset_dir.exists() else []
+
+    if not matches:
+        matches = sorted(RESULTS_DIR.glob(pattern), reverse=True)
 
     for n in distractor_levels:
         # Pick the most recent file for this exact distractor value.
