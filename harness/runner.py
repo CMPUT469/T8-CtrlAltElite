@@ -109,6 +109,22 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
+    "postgres_stage1": {
+        "tasks": {
+            "L1": "datasets/postgres_stage1/tasks_l1.jsonl",
+            "L2": "datasets/postgres_stage1/tasks_l2.jsonl",
+            "L3": "datasets/postgres_stage1/tasks_l3.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
+    "postgres_stage1-v2": {
+        "tasks": {
+            "L1": "datasets/postgres_stage1/tasks_l1_v2.jsonl",
+            "L2": "datasets/postgres_stage1/tasks_l2_v2.jsonl",
+            "L3": "datasets/postgres_stage1/tasks_l3_v2.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
     "finance": {
         "tasks": {
             "L1": "datasets/finance/tasks_l1.jsonl",
