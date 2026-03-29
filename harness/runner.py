@@ -3,10 +3,12 @@ Unified evaluation runner.
 
 Replaces evaluate_jefferson.py and evaluate_bfcl.py with a single entry point.
 
-Scoring is outcome-based only (MCPVerse-style WOS). The `functions` field in
-task JSONL is a reference path logged for human transparency — it never
-influences scoring. A model that reaches the correct answer via an alternative
-tool sequence scores the same as one that follows the reference path.
+Scoring is outcome-first (MCPVerse-style WOS).
+
+- Deterministic tasks (`expected_outcome` present): tool path does not affect
+  scoring as long as the expected outcome is reached.
+- Non-deterministic tasks (`expected_outcome` absent): when `expected_params`
+  is provided, pass/fail requires the called arguments to match it.
 
 Usage examples
 ──────────────
@@ -47,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from harness.metrics import (
     calculate_metrics,
     compare_outcome_across_steps,
+    compare_params,
     compare_values,
     extract_result_value,
     print_report,
@@ -69,11 +72,11 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
-    "jefferson_stage1": {
+    "jefferson-v2": {
         "tasks": {
-            "L1": "datasets/jefferson_stats_stage1/tasks_l1.jsonl",
-            "L2": "datasets/jefferson_stats_stage1/tasks_l2.jsonl",
-            "L3": "datasets/jefferson_stats_stage1/tasks_l3.jsonl",
+            "L1": "datasets/jefferson_stats/tasks_l1_v2.jsonl",
+            "L2": "datasets/jefferson_stats/tasks_l2_v2.jsonl",
+            "L3": "datasets/jefferson_stats/tasks_l3_v2.jsonl",
         },
         "server": "mcp-server/main.py",
     },
@@ -85,7 +88,7 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
-     "bfcl-v2": {
+    "bfcl-v2": {
         "tasks": {
             "L1": "datasets/bfcl_math/tasks_l1_v2.jsonl",
             "L2": "datasets/bfcl_math/tasks_l2_v2.jsonl",
@@ -109,19 +112,19 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
+    "finance-v2": {
+        "tasks": {
+            "L1": "datasets/finance/tasks_l1_v2.jsonl",
+            "L2": "datasets/finance/tasks_l2_v2.jsonl",
+            "L3": "datasets/finance/tasks_l3_v2.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
     "finance": {
         "tasks": {
             "L1": "datasets/finance/tasks_l1.jsonl",
             "L2": "datasets/finance/tasks_l2.jsonl",
             "L3": "datasets/finance/tasks_l3.jsonl",
-        },
-        "server": "mcp-server/main.py",
-    },
-    "finance_stage0": {
-        "tasks": {
-            "L1": "datasets/finance_stage0/tasks_l1.jsonl",
-            "L2": "datasets/finance_stage0/tasks_l2.jsonl",
-            "L3": "datasets/finance_stage0/tasks_l3.jsonl",
         },
         "server": "mcp-server/main.py",
     },
@@ -197,19 +200,29 @@ def _compare_step_params(
     """
     Compare expected params for single-step and multi-step tasks.
 
-    - dict: compare against the first matched call (or first call if no match passed)
-    - list[dict]: compare expected per-step params against matched call indices
+    - dict: compare against the first matched call.
+      If matched_indices is None, compare against the first call.
+      If matched_indices is an empty list, fail (no aligned function call).
+    - list[dict]: compare expected per-step params against matched call indices.
+      If matched_indices is None, fall back to call order.
     """
     if expected_params is None:
         return True
-    target_indices = matched_indices or []
     if isinstance(expected_params, dict):
-        idx = target_indices[0] if target_indices else 0
+        if matched_indices is None:
+            idx = 0
+        elif not matched_indices:
+            return False
+        else:
+            idx = matched_indices[0]
         first = called_params[idx] if idx < len(called_params) else {}
         return compare_params(first, expected_params)
     if isinstance(expected_params, list):
-        if not target_indices:
-            target_indices = list(range(len(called_params)))
+        target_indices = (
+            list(range(len(called_params)))
+            if matched_indices is None
+            else matched_indices
+        )
         if len(target_indices) < len(expected_params):
             return False
         for i, exp in enumerate(expected_params):
@@ -265,8 +278,10 @@ async def run_evaluation(
             task_id      = task.get("id", f"task_{i}")
             query        = task["query"]
             level        = task.get("level", "L1")
+            expected_params = task.get("expected_params")
 
-            # Reference functions — for log transparency only, not scored
+            # Reference functions: used for tool exposure and expected-param
+            # alignment on non-deterministic tasks.
             ref_functions = task.get("functions") or (
                 [task["function"]] if "function" in task else []
             )
@@ -280,9 +295,13 @@ async def run_evaluation(
                 "query":              query,
                 # Reference path (transparency only)
                 "ref_functions":      ref_functions,
+                "expected_params":    expected_params,
                 # What the model actually did
                 "actual_functions":   [],
                 "actual_params":      None,
+                "actual_params_by_step": [],
+                "matched_ref_indices": None,
+                "params_match":       None,
                 "actual_result":      None,
                 "correct_result":     False,
                 "optimal_steps":      optimal_steps,
@@ -337,6 +356,7 @@ async def run_evaluation(
                 record["actual_steps"] += 1
                 record["actual_functions"].append(tool_call.function_name)
                 record["actual_params"] = tool_call.arguments
+                record["actual_params_by_step"].append(tool_call.arguments)
                 record["call_source"]    = tool_call.call_source
 
                 try:
@@ -375,6 +395,29 @@ async def run_evaluation(
                     break
 
             # ── Outcome evaluation ────────────────────────────────────────
+            matched_indices: list[int] | None = None
+            if ref_functions:
+                matched_indices = _find_subsequence_indices(
+                    record["actual_functions"],
+                    ref_functions,
+                )
+                if matched_indices is None:
+                    matched_indices = []
+            record["matched_ref_indices"] = matched_indices
+
+            params_ok = True
+            if expected_params is not None and record["actual_functions"]:
+                params_ok = _compare_step_params(
+                    record["actual_params_by_step"],
+                    expected_params,
+                    matched_indices=matched_indices,
+                )
+                record["params_match"] = params_ok
+                if not params_ok:
+                    totals["wrong_params"] += 1
+            elif expected_params is not None:
+                record["params_match"] = False
+
             if record["actual_functions"]:
                 if ref_functions and not any(fn in ref_functions for fn in record["actual_functions"]):
                     totals["wrong_tool"] += 1
@@ -392,8 +435,13 @@ async def run_evaluation(
                     )
                 else:
                     # Non-deterministic tasks (finance/postgres): a successful
-                    # tool call with no error is a pass
-                    outcome_ok = record["actual_steps"] > 0 and record.get("error") is None
+                    # tool call with no error is a pass, but when expected
+                    # params are provided they must match.
+                    outcome_ok = (
+                        record["actual_steps"] > 0
+                        and record.get("error") is None
+                        and (expected_params is None or params_ok)
+                    )
 
                 if outcome_ok:
                     record["correct_result"] = True

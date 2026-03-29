@@ -39,7 +39,8 @@ pip install -r requirements-eval.txt
 
 ```powershell
 python -m harness.runner --dataset bfcl --model qwen2.5:7b --level L1
-python -m harness.runner --dataset jefferson_stage1 --model qwen2.5:7b --level L1 L2 L3
+python -m harness.runner --dataset jefferson-v2 --model qwen2.5:7b --level L1 L2 L3
+python -m harness.runner --dataset finance-v2 --model qwen2.5:7b --level L1
 ```
 
 `configs/models.yaml` is the runtime model registry. Runtime resolves model defaults from that file first, then applies any CLI overrides such as `--backend`, `--base-url`, and `--api-key`.

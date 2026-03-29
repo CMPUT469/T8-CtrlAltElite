@@ -16,10 +16,10 @@ the special case where every task has optimal_steps == actual_steps == 1,
 which gives WOS == outcome_accuracy. The weighting generalises it to
 penalise inefficient multi-step solutions without needing a separate metric.
 
-Tool choice is intentionally not scored. If the model used the wrong tool,
-the result will be wrong and WOS captures that through E(O, Ô). The
-`functions` field in task JSONL is a reference path for log transparency
-only — it never influences scoring.
+Tool choice is intentionally not scored directly. If the model used the wrong
+tool, the result will generally be wrong and WOS captures that through E(O, Ô).
+For non-deterministic tasks, runner-level checks may use expected params as a
+proxy for correctness before WOS is computed.
 Aggregate WOS is reported as a percentage.
 """
 
