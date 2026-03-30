@@ -192,10 +192,42 @@ def _matched_prefix_length(actual: list[str], expected: list[str]) -> int:
     return exp_i
 
 
+def _compare_values_exact(actual: object, expected: object) -> bool:
+    """
+    Deep equality with numeric tolerance, but no subset semantics.
+
+    Dict keys must match exactly (including nested dicts/lists).
+    """
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        if set(actual.keys()) != set(expected.keys()):
+            return False
+        return all(_compare_values_exact(actual[k], expected[k]) for k in expected)
+
+    if isinstance(actual, (list, tuple)) and isinstance(expected, (list, tuple)):
+        if len(actual) != len(expected):
+            return False
+        return all(_compare_values_exact(a, e) for a, e in zip(actual, expected))
+
+    return compare_values(actual, expected)
+
+
+def _compare_params_exact(actual: dict, expected: dict) -> bool:
+    """
+    Exact parameter equality for strict datasets.
+
+    - Same keys only (no extras/missing keys)
+    - Values compared recursively with numeric tolerance
+    """
+    if set(actual.keys()) != set(expected.keys()):
+        return False
+    return all(_compare_values_exact(actual[k], v) for k, v in expected.items())
+
+
 def _compare_step_params(
     called_params: list[dict],
     expected_params: object,
     matched_indices: list[int] | None = None,
+    strict: bool = False,
 ) -> bool:
     """
     Compare expected params for single-step and multi-step tasks.
@@ -208,6 +240,7 @@ def _compare_step_params(
     """
     if expected_params is None:
         return True
+    param_comparator = _compare_params_exact if strict else compare_params
     if isinstance(expected_params, dict):
         if matched_indices is None:
             idx = 0
@@ -216,7 +249,7 @@ def _compare_step_params(
         else:
             idx = matched_indices[0]
         first = called_params[idx] if idx < len(called_params) else {}
-        return compare_params(first, expected_params)
+        return param_comparator(first, expected_params)
     if isinstance(expected_params, list):
         target_indices = (
             list(range(len(called_params)))
@@ -231,7 +264,7 @@ def _compare_step_params(
             idx = target_indices[i]
             if idx >= len(called_params):
                 return False
-            if not compare_params(called_params[idx], exp):
+            if not param_comparator(called_params[idx], exp):
                 return False
         return True
     return False
@@ -253,6 +286,7 @@ async def run_evaluation(
     from harness.model_client import ModelClient
 
     tasks = load_tasks(dataset, levels, limit)
+    strict_tool_param_checks = dataset in {"finance", "finance-v2"}
     if not tasks:
         print("No tasks loaded - check dataset paths.")
         return {}
@@ -301,6 +335,7 @@ async def run_evaluation(
                 "actual_params":      None,
                 "actual_params_by_step": [],
                 "matched_ref_indices": None,
+                "tool_match":         None,
                 "params_match":       None,
                 "actual_result":      None,
                 "correct_result":     False,
@@ -411,6 +446,7 @@ async def run_evaluation(
                     record["actual_params_by_step"],
                     expected_params,
                     matched_indices=matched_indices,
+                    strict=strict_tool_param_checks,
                 )
                 record["params_match"] = params_ok
                 if not params_ok:
@@ -418,9 +454,18 @@ async def run_evaluation(
             elif expected_params is not None:
                 record["params_match"] = False
 
-            if record["actual_functions"]:
-                if ref_functions and not any(fn in ref_functions for fn in record["actual_functions"]):
-                    totals["wrong_tool"] += 1
+            tool_ok = True
+            if ref_functions:
+                # Finance datasets require exact tool path; other datasets use
+                # in-order subsequence matching.
+                if strict_tool_param_checks:
+                    tool_ok = record["actual_functions"] == ref_functions
+                else:
+                    tool_ok = bool(matched_indices)
+                record["tool_match"] = tool_ok
+
+            if record["actual_functions"] and ref_functions and not tool_ok:
+                totals["wrong_tool"] += 1
                         
             if step_results:
                 expected_outcome          = task.get("expected_outcome")
@@ -437,11 +482,24 @@ async def run_evaluation(
                     # Non-deterministic tasks (finance/postgres): a successful
                     # tool call with no error is a pass, but when expected
                     # params are provided they must match.
-                    outcome_ok = (
-                        record["actual_steps"] > 0
-                        and record.get("error") is None
-                        and (expected_params is None or params_ok)
-                    )
+                    if strict_tool_param_checks:
+                        tool_ok_for_outcome = (
+                            record["tool_match"]
+                            if record["tool_match"] is not None
+                            else True
+                        )
+                        outcome_ok = (
+                            record["actual_steps"] > 0
+                            and record.get("error") is None
+                            and bool(tool_ok_for_outcome)
+                            and (expected_params is None or params_ok)
+                        )
+                    else:
+                        outcome_ok = (
+                            record["actual_steps"] > 0
+                            and record.get("error") is None
+                            and (expected_params is None or params_ok)
+                        )
 
                 if outcome_ok:
                     record["correct_result"] = True
