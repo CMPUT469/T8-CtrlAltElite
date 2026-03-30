@@ -18,11 +18,10 @@ The active backend and evaluation architecture is the `harness/` path. Legacy pa
 
 ## Prerequisites
 
-- Python 3.13+
+- Python 3.11+
 - `uv` installed
 - an OpenAI-compatible inference endpoint
-  - local Ollama today
-  - vLLM later
+  - local Ollama on Eureka is the supported path
 - for local Ollama, at least one pulled model, for example:
 
 ```powershell
@@ -33,6 +32,7 @@ ollama pull qwen2.5
 
 ```powershell
 pip install -r requirements-eval.txt
+pip install httpx psycopg2-binary
 ```
 
 ## Run Evaluations
@@ -43,7 +43,7 @@ python -m harness.runner --dataset bfcl --model qwen2.5:7b --level L1
 
 `configs/models.yaml` is the runtime model registry. Runtime resolves model defaults from that file first, then applies any CLI overrides such as `--backend`, `--base-url`, and `--api-key`.
 
-For Eureka-hosted vLLM endpoints, set `EUREKA_VLLM_BASE_URL` and `EUREKA_VLLM_API_KEY` in `.env` or your shell, then point a `vllm` model entry in `configs/models.yaml` at those env vars.
+For non-Ollama OpenAI-compatible endpoints, use `--backend openai` with `--base-url` and `--api-key`, or add an `openai` model entry in `configs/models.yaml`.
 
 ## Threshold Sweep
 
@@ -98,4 +98,5 @@ python -m harness.runner --dataset postgres --model qwen2.5:7b --level L1
 
 - Override model/provider defaults with `--backend`, `--base-url`, and `--api-key` when needed.
 - If model loading fails under Ollama, run `ollama pull <model-name>` first.
+- The active Eureka path uses Ollama in user space, not vLLM.
 - `DATABASE_URL` must be set in `.env` for SQL tools to work. Math tools work without it.

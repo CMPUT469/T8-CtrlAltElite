@@ -92,25 +92,25 @@ python -m harness.runner --dataset jefferson --model qwen2.5:7b --level L1 --ora
 python -m harness.runner --dataset jefferson --model qwen2.5:7b --limit 5
 ```
 
-### Run (vLLM on Eureka)
+### Run (OpenAI-Compatible Endpoint)
 
-Once your Eureka endpoint is running (`vllm serve <model> --port 8000 --api-key <token>`):
+Once your Eureka endpoint is running and exposes an OpenAI-compatible `/v1` API:
 
-1. Update `configs/models.yaml` with the real host and token.
-2. Run exactly the same command with `--backend vllm`:
+1. Update `configs/models.yaml` with the real host and token, or pass them on the CLI.
+2. Run exactly the same command with `--backend openai`:
 
 ```bash
 python -m harness.runner \
     --dataset jefferson \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --backend vllm \
+    --model openai-compatible-local \
+    --backend openai \
     --base-url http://eureka-node-01:8000/v1 \
     --api-key your-token \
     --level L1 L2 L3
 ```
 
 No other changes needed — the harness uses the same OpenAI-compatible client for
-both Ollama and vLLM.
+both Ollama and other compatible runtimes.
 
 ---
 

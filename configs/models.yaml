@@ -3,39 +3,32 @@
 # Add one entry per model you want to evaluate.
 # Runtime resolves by model name from this file first, then applies any CLI overrides.
 # `base_url` and `api_key` may be literal values or env-var references like
-# $EUREKA_VLLM_BASE_URL and $EUREKA_VLLM_API_KEY.
+# $LOCAL_OPENAI_BASE_URL and $LLM_API_KEY.
 #
 # backend options:
 #   ollama  - local Ollama server (current setup)
-#   vllm    - vLLM OpenAI-compatible endpoint (Eureka)
+#   openai  - OpenAI-compatible HTTP endpoint
 
 models:
 
-  # Local Ollama development
-  - name: qwen2.5:7b
+  # Local Ollama development / Eureka
+  - name: qwen3:8b
     backend: ollama
     base_url: http://localhost:11434/v1
-    api_key: none
+    api_key: ollama
 
-  - name: llama3.1:8b
+  - name: qwen2.5:latest
     backend: ollama
     base_url: http://localhost:11434/v1
-    api_key: none
+    api_key: ollama
 
-  # Eureka-hosted vLLM endpoints
-  # Example launch:
-  #   vllm serve <model_id> --host 0.0.0.0 --port 8000 --api-key <token>
-  #
-  # Set EUREKA_VLLM_BASE_URL to the reachable endpoint, for example:
-  #   http://gpu-node-01:8000/v1
-  #
-  # The harness will resolve these env-backed values at runtime.
-  - name: meta-llama/Llama-3.1-8B-Instruct
-    backend: vllm
-    base_url: $EUREKA_VLLM_BASE_URL
-    api_key: $EUREKA_VLLM_API_KEY
+  - name: gpt-oss:20b
+    backend: ollama
+    base_url: http://localhost:11434/v1
+    api_key: ollama
 
-  - name: Qwen/Qwen2.5-7B-Instruct
-    backend: vllm
-    base_url: $EUREKA_VLLM_BASE_URL
-    api_key: $EUREKA_VLLM_API_KEY
+  # Generic OpenAI-compatible endpoint example
+  - name: openai-compatible-local
+    backend: openai
+    base_url: $LOCAL_OPENAI_BASE_URL
+    api_key: $LLM_API_KEY

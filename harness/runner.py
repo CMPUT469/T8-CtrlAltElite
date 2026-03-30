@@ -335,7 +335,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Which dataset to evaluate")
     p.add_argument("--model", required=True,
                    help="Model identifier (e.g. qwen2.5:7b or meta-llama/Llama-3.1-8B-Instruct)")
-    p.add_argument("--backend", default="ollama", choices=["ollama", "vllm", "openai"],
+    p.add_argument("--backend", default="ollama", choices=["ollama", "openai"],
                    help="Provider backend (default: ollama)")
     p.add_argument("--base-url", default=None,
                    help="Override API base URL (otherwise use configs/models.yaml, then backend defaults)")

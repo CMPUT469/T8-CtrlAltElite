@@ -115,7 +115,7 @@ def main():
     p = argparse.ArgumentParser(description="Distractor threshold sweep")
     p.add_argument("--dataset",    required=True, choices=list(DATASETS))
     p.add_argument("--model",      required=True)
-    p.add_argument("--backend",    default="ollama", choices=["ollama", "vllm", "openai"])
+    p.add_argument("--backend",    default="ollama", choices=["ollama", "openai"])
     p.add_argument("--base-url",   default=None)
     p.add_argument("--api-key",    default=None)
     p.add_argument("--level",      nargs="+", default=["L1", "L2", "L3"])

@@ -5,9 +5,8 @@ Isolates all LLM provider logic so the harness never touches provider APIs direc
 Swap backends by changing configs/models.yaml — nothing else changes.
 
 Supported backends:
-  - ollama   : local Ollama (current)
-  - vllm     : vLLM OpenAI-compatible endpoint (Eureka target)
-  - openai   : OpenAI / any OpenAI-compatible SaaS
+  - ollama   : local Ollama (current Eureka path)
+  - openai   : OpenAI / any OpenAI-compatible HTTP endpoint
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ class ToolCall:
 class ModelConfig:
     """Everything needed to instantiate a client for one model."""
     name: str                          # model identifier sent to the API
-    backend: str                       # 'ollama' | 'vllm' | 'openai'
+    backend: str                       # 'ollama' | 'openai'
     base_url: str
     api_key: str = "none"
     extra: dict[str, Any] = field(default_factory=dict)
@@ -51,13 +50,11 @@ class ModelConfig:
 
 _BACKEND_DEFAULTS = {
     "ollama": "http://localhost:11434/v1",
-    "vllm":   "http://localhost:8000/v1",
     "openai": "https://api.openai.com/v1",
 }
 
 _BACKEND_API_KEY_ENV_VARS = {
     "ollama": ("OLLAMA_API_KEY", "LLM_API_KEY"),
-    "vllm": ("EUREKA_VLLM_API_KEY", "VLLM_API_KEY", "LLM_API_KEY"),
     "openai": ("OPENAI_API_KEY", "LLM_API_KEY"),
 }
 
@@ -113,7 +110,7 @@ class ModelClient:
         response = self.chat(messages, tools)
         message = response.choices[0].message
 
-        # 1. Native tool call (preferred path for both Ollama and vLLM)
+        # 1. Native tool call (preferred path)
         if getattr(message, "tool_calls", None):
             tc = message.tool_calls[0]
             return ToolCall(
@@ -197,9 +194,9 @@ def client_from_yaml(model_name: str, configs_path: str = "configs/models.yaml")
           - name: qwen2.5:7b
             backend: ollama
             base_url: http://localhost:11434/v1
-          - name: meta-llama/Llama-3.1-8B-Instruct
-            backend: vllm
-            base_url: http://eureka-node-01:8000/v1
+          - name: openai-compatible-local
+            backend: openai
+            base_url: http://localhost:8000/v1
             api_key: token-abc123
     """
     return ModelClient(resolve_model_config(model_name, configs_path=configs_path))
@@ -309,12 +306,12 @@ def provider_runtime_note(config: ModelConfig, *, allow_fallback: bool = False) 
     """
     Return a short provider-specific note for CLI output when one is useful.
     """
-    if config.backend != "vllm":
+    if config.backend != "openai":
         return None
 
     note = (
-        "vLLM is treated as a remote OpenAI-compatible endpoint; native tool calling "
-        "still depends on the served model and vLLM stack."
+        "OpenAI-compatible endpoints vary in native tool-calling support depending "
+        "on the served model and runtime."
     )
     if not allow_fallback:
         note += " Use --allow-fallback if the endpoint returns JSON-in-text instead of tool_calls."

@@ -260,7 +260,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--backend",
         default=None,
-        choices=["ollama", "vllm", "openai"],
+        choices=["ollama", "openai"],
         help="Provider backend. If omitted, prefer configs/models.yaml for this model, else default to ollama.",
     )
     parser.add_argument(
