@@ -2,6 +2,7 @@ import unittest
 
 from harness.runner import (
     DATASETS,
+    _compare_params_exact,
     _compare_step_params,
     _find_subsequence_indices,
     _matched_prefix_length,
@@ -45,6 +46,12 @@ class CompareStepParamsTests(unittest.TestCase):
             _compare_step_params(called, {"ticker": "AAPL"}, matched_indices=matched)
         )
 
+    def test_single_step_params_fail_when_no_function_match(self):
+        called = [{"ticker": "AAPL"}]
+        self.assertFalse(
+            _compare_step_params(called, {"ticker": "AAPL"}, matched_indices=[])
+        )
+
     def test_multi_step_params_align_to_matched_subsequence(self):
         called = [
             {"ticker": "NOPE"},
@@ -61,15 +68,60 @@ class CompareStepParamsTests(unittest.TestCase):
         self.assertFalse(_compare_step_params(called, expected, matched_indices=[0]))
 
 
+class StrictParamComparisonTests(unittest.TestCase):
+    def test_exact_params_rejects_extra_keys(self):
+        self.assertFalse(
+            _compare_params_exact(
+                {"ticker": "AAPL", "limit": 5, "period": "annual"},
+                {"ticker": "AAPL", "limit": 5},
+            )
+        )
+
+    def test_exact_params_accepts_same_keys_and_values(self):
+        self.assertTrue(
+            _compare_params_exact(
+                {"ticker": "AAPL", "limit": 5},
+                {"ticker": "AAPL", "limit": 5},
+            )
+        )
+
+    def test_compare_step_params_strict_mode_enforces_exactness(self):
+        called = [{"ticker": "AAPL", "limit": 5, "period": "annual"}]
+        expected = {"ticker": "AAPL", "limit": 5}
+        self.assertFalse(_compare_step_params(called, expected, strict=True))
+
+
 class DatasetRegistryTests(unittest.TestCase):
-    def test_jefferson_stage1_dataset_is_registered_for_all_levels(self):
-        self.assertIn("jefferson_stage1", DATASETS)
+    def test_jefferson_v2_dataset_is_registered_for_all_levels(self):
+        self.assertIn("jefferson-v2", DATASETS)
         self.assertEqual(
-            DATASETS["jefferson_stage1"]["tasks"],
+            DATASETS["jefferson-v2"]["tasks"],
             {
-                "L1": "datasets/jefferson_stats_stage1/tasks_l1.jsonl",
-                "L2": "datasets/jefferson_stats_stage1/tasks_l2.jsonl",
-                "L3": "datasets/jefferson_stats_stage1/tasks_l3.jsonl",
+                "L1": "datasets/jefferson_stats/tasks_l1_v2.jsonl",
+                "L2": "datasets/jefferson_stats/tasks_l2_v2.jsonl",
+                "L3": "datasets/jefferson_stats/tasks_l3_v2.jsonl",
+            },
+        )
+
+    def test_finance_dataset_is_registered_for_all_levels(self):
+        self.assertIn("finance", DATASETS)
+        self.assertEqual(
+            DATASETS["finance"]["tasks"],
+            {
+                "L1": "datasets/finance/tasks_l1.jsonl",
+                "L2": "datasets/finance/tasks_l2.jsonl",
+                "L3": "datasets/finance/tasks_l3.jsonl",
+            },
+        )
+
+    def test_finance_v2_dataset_is_registered_for_all_levels(self):
+        self.assertIn("finance-v2", DATASETS)
+        self.assertEqual(
+            DATASETS["finance-v2"]["tasks"],
+            {
+                "L1": "datasets/finance/tasks_l1_v2.jsonl",
+                "L2": "datasets/finance/tasks_l2_v2.jsonl",
+                "L3": "datasets/finance/tasks_l3_v2.jsonl",
             },
         )
 

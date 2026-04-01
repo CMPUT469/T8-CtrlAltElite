@@ -3,10 +3,12 @@ Unified evaluation runner.
 
 Replaces evaluate_jefferson.py and evaluate_bfcl.py with a single entry point.
 
-Scoring is outcome-based only (MCPVerse-style WOS). The `functions` field in
-task JSONL is a reference path logged for human transparency — it never
-influences scoring. A model that reaches the correct answer via an alternative
-tool sequence scores the same as one that follows the reference path.
+Scoring is outcome-first (MCPVerse-style WOS).
+
+- Deterministic tasks (`expected_outcome` present): tool path does not affect
+  scoring as long as the expected outcome is reached.
+- Non-deterministic tasks (`expected_outcome` absent): when `expected_params`
+  is provided, pass/fail requires the called arguments to match it.
 
 Usage examples
 ──────────────
@@ -47,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from harness.metrics import (
     calculate_metrics,
     compare_outcome_across_steps,
+    compare_params,
     compare_values,
     extract_result_value,
     print_report,
@@ -69,11 +72,11 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
-    "jefferson_stage1": {
+    "jefferson-v2": {
         "tasks": {
-            "L1": "datasets/jefferson_stats_stage1/tasks_l1.jsonl",
-            "L2": "datasets/jefferson_stats_stage1/tasks_l2.jsonl",
-            "L3": "datasets/jefferson_stats_stage1/tasks_l3.jsonl",
+            "L1": "datasets/jefferson_stats/tasks_l1_v2.jsonl",
+            "L2": "datasets/jefferson_stats/tasks_l2_v2.jsonl",
+            "L3": "datasets/jefferson_stats/tasks_l3_v2.jsonl",
         },
         "server": "mcp-server/main.py",
     },
@@ -85,7 +88,7 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
-     "bfcl-v2": {
+    "bfcl-v2": {
         "tasks": {
             "L1": "datasets/bfcl_math/tasks_l1_v2.jsonl",
             "L2": "datasets/bfcl_math/tasks_l2_v2.jsonl",
@@ -126,18 +129,19 @@ DATASETS: dict[str, dict] = {
         "server": "mcp-server/main.py",
     },
     "finance": {
+    "finance-v2": {
+        "tasks": {
+            "L1": "datasets/finance/tasks_l1_v2.jsonl",
+            "L2": "datasets/finance/tasks_l2_v2.jsonl",
+            "L3": "datasets/finance/tasks_l3_v2.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
+    "finance": {
         "tasks": {
             "L1": "datasets/finance/tasks_l1.jsonl",
             "L2": "datasets/finance/tasks_l2.jsonl",
             "L3": "datasets/finance/tasks_l3.jsonl",
-        },
-        "server": "mcp-server/main.py",
-    },
-    "finance_stage0": {
-        "tasks": {
-            "L1": "datasets/finance_stage0/tasks_l1.jsonl",
-            "L2": "datasets/finance_stage0/tasks_l2.jsonl",
-            "L3": "datasets/finance_stage0/tasks_l3.jsonl",
         },
         "server": "mcp-server/main.py",
     },
@@ -205,27 +209,70 @@ def _matched_prefix_length(actual: list[str], expected: list[str]) -> int:
     return exp_i
 
 
+def _compare_values_exact(actual: object, expected: object) -> bool:
+    """
+    Deep equality with numeric tolerance, but no subset semantics.
+
+    Dict keys must match exactly (including nested dicts/lists).
+    """
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        if set(actual.keys()) != set(expected.keys()):
+            return False
+        return all(_compare_values_exact(actual[k], expected[k]) for k in expected)
+
+    if isinstance(actual, (list, tuple)) and isinstance(expected, (list, tuple)):
+        if len(actual) != len(expected):
+            return False
+        return all(_compare_values_exact(a, e) for a, e in zip(actual, expected))
+
+    return compare_values(actual, expected)
+
+
+def _compare_params_exact(actual: dict, expected: dict) -> bool:
+    """
+    Exact parameter equality for strict datasets.
+
+    - Same keys only (no extras/missing keys)
+    - Values compared recursively with numeric tolerance
+    """
+    if set(actual.keys()) != set(expected.keys()):
+        return False
+    return all(_compare_values_exact(actual[k], v) for k, v in expected.items())
+
+
 def _compare_step_params(
     called_params: list[dict],
     expected_params: object,
     matched_indices: list[int] | None = None,
+    strict: bool = False,
 ) -> bool:
     """
     Compare expected params for single-step and multi-step tasks.
 
-    - dict: compare against the first matched call (or first call if no match passed)
-    - list[dict]: compare expected per-step params against matched call indices
+    - dict: compare against the first matched call.
+      If matched_indices is None, compare against the first call.
+      If matched_indices is an empty list, fail (no aligned function call).
+    - list[dict]: compare expected per-step params against matched call indices.
+      If matched_indices is None, fall back to call order.
     """
     if expected_params is None:
         return True
-    target_indices = matched_indices or []
+    param_comparator = _compare_params_exact if strict else compare_params
     if isinstance(expected_params, dict):
-        idx = target_indices[0] if target_indices else 0
+        if matched_indices is None:
+            idx = 0
+        elif not matched_indices:
+            return False
+        else:
+            idx = matched_indices[0]
         first = called_params[idx] if idx < len(called_params) else {}
-        return compare_params(first, expected_params)
+        return param_comparator(first, expected_params)
     if isinstance(expected_params, list):
-        if not target_indices:
-            target_indices = list(range(len(called_params)))
+        target_indices = (
+            list(range(len(called_params)))
+            if matched_indices is None
+            else matched_indices
+        )
         if len(target_indices) < len(expected_params):
             return False
         for i, exp in enumerate(expected_params):
@@ -234,7 +281,7 @@ def _compare_step_params(
             idx = target_indices[i]
             if idx >= len(called_params):
                 return False
-            if not compare_params(called_params[idx], exp):
+            if not param_comparator(called_params[idx], exp):
                 return False
         return True
     return False
@@ -251,11 +298,13 @@ async def run_evaluation(
     limit: Optional[int],
     num_distractors: Optional[int],
     allow_fallback: bool,
+    prompt_template: Optional[str] = None,
 ) -> dict:
     from harness.mcp_session import filter_tools_for_task, mcp_session
     from harness.model_client import ModelClient
 
     tasks = load_tasks(dataset, levels, limit)
+    strict_tool_param_checks = dataset in {"finance", "finance-v2"}
     if not tasks:
         print("No tasks loaded - check dataset paths.")
         return {}
@@ -281,8 +330,10 @@ async def run_evaluation(
             task_id      = task.get("id", f"task_{i}")
             query        = task["query"]
             level        = task.get("level", "L1")
+            expected_params = task.get("expected_params")
 
-            # Reference functions — for log transparency only, not scored
+            # Reference functions: used for tool exposure and expected-param
+            # alignment on non-deterministic tasks.
             ref_functions = task.get("functions") or (
                 [task["function"]] if "function" in task else []
             )
@@ -296,9 +347,14 @@ async def run_evaluation(
                 "query":              query,
                 # Reference path (transparency only)
                 "ref_functions":      ref_functions,
+                "expected_params":    expected_params,
                 # What the model actually did
                 "actual_functions":   [],
                 "actual_params":      None,
+                "actual_params_by_step": [],
+                "matched_ref_indices": None,
+                "tool_match":         None,
+                "params_match":       None,
                 "actual_result":      None,
                 "correct_result":     False,
                 "optimal_steps":      optimal_steps,
@@ -311,6 +367,10 @@ async def run_evaluation(
             }
 
             sys_content = "You are a helpful assistant. Use the provided tools when needed."
+  
+            if prompt_template:
+                sys_content = prompt_template + "\n\n" + sys_content
+  
             if dataset.startswith("postgres"):
                 sys_content += (
                     "\n\nFor Postgres tasks:"
@@ -321,6 +381,7 @@ async def run_evaluation(
                     "\n- Do not change limit unless the task explicitly asks for a specific number of rows."
                     "\n- Use joins and JSON field access only as supported by the inspected schema and tool outputs."
                 )
+           
             if allow_fallback:
                 sys_content += (
                     '\n\nIf you cannot emit a native tool call, respond with ONLY valid JSON: '
@@ -363,6 +424,7 @@ async def run_evaluation(
                 record["actual_steps"] += 1
                 record["actual_functions"].append(tool_call.function_name)
                 record["actual_params"] = tool_call.arguments
+                record["actual_params_by_step"].append(tool_call.arguments)
                 record["call_source"]    = tool_call.call_source
 
                 try:
@@ -401,9 +463,42 @@ async def run_evaluation(
                     break
 
             # ── Outcome evaluation ────────────────────────────────────────
-            if record["actual_functions"]:
-                if ref_functions and not any(fn in ref_functions for fn in record["actual_functions"]):
-                    totals["wrong_tool"] += 1
+            matched_indices: list[int] | None = None
+            if ref_functions:
+                matched_indices = _find_subsequence_indices(
+                    record["actual_functions"],
+                    ref_functions,
+                )
+                if matched_indices is None:
+                    matched_indices = []
+            record["matched_ref_indices"] = matched_indices
+
+            params_ok = True
+            if expected_params is not None and record["actual_functions"]:
+                params_ok = _compare_step_params(
+                    record["actual_params_by_step"],
+                    expected_params,
+                    matched_indices=matched_indices,
+                    strict=strict_tool_param_checks,
+                )
+                record["params_match"] = params_ok
+                if not params_ok:
+                    totals["wrong_params"] += 1
+            elif expected_params is not None:
+                record["params_match"] = False
+
+            tool_ok = True
+            if ref_functions:
+                # Finance datasets require exact tool path; other datasets use
+                # in-order subsequence matching.
+                if strict_tool_param_checks:
+                    tool_ok = record["actual_functions"] == ref_functions
+                else:
+                    tool_ok = bool(matched_indices)
+                record["tool_match"] = tool_ok
+
+            if record["actual_functions"] and ref_functions and not tool_ok:
+                totals["wrong_tool"] += 1
                         
             if step_results:
                 expected_outcome          = task.get("expected_outcome")
@@ -418,8 +513,26 @@ async def run_evaluation(
                     )
                 else:
                     # Non-deterministic tasks (finance/postgres): a successful
-                    # tool call with no error is a pass
-                    outcome_ok = record["actual_steps"] > 0 and record.get("error") is None
+                    # tool call with no error is a pass, but when expected
+                    # params are provided they must match.
+                    if strict_tool_param_checks:
+                        tool_ok_for_outcome = (
+                            record["tool_match"]
+                            if record["tool_match"] is not None
+                            else True
+                        )
+                        outcome_ok = (
+                            record["actual_steps"] > 0
+                            and record.get("error") is None
+                            and bool(tool_ok_for_outcome)
+                            and (expected_params is None or params_ok)
+                        )
+                    else:
+                        outcome_ok = (
+                            record["actual_steps"] > 0
+                            and record.get("error") is None
+                            and (expected_params is None or params_ok)
+                        )
 
                 if outcome_ok:
                     record["correct_result"] = True
@@ -495,6 +608,14 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Oracle mode: expose only the reference tools per task")
     p.add_argument("--num-distractors", type=int, default=None)
     p.add_argument("--allow-fallback",  action="store_true")
+    p.add_argument(
+       "--prompt-template",
+       type=Path,
+       default=None,
+       metavar="FILE",
+       help="Path to a plain-text prompt template file. Its contents are "
+            "prepended to the system message for every task in the run.",
+    )
     p.add_argument("--output",   type=Path, default=None)
     return p
 
@@ -521,6 +642,15 @@ def main():
     print(f"  mode     : {'oracle' if num_distractors == 0 else 'standard' if num_distractors is None else f'{num_distractors} distractors'}")
     print("=" * 62)
 
+    prompt_template: Optional[str] = None
+    if args.prompt_template:
+       template_path = Path(args.prompt_template)
+       if not template_path.exists():
+           print(f"[error] prompt template not found: {template_path}")
+           sys.exit(1)
+       prompt_template = template_path.read_text(encoding="utf-8").strip()
+       print(f"  template : {template_path}")
+
     output = asyncio.run(run_evaluation(
         dataset=args.dataset,
         model_cfg=model_cfg,
@@ -528,6 +658,7 @@ def main():
         limit=args.limit,
         num_distractors=num_distractors,
         allow_fallback=args.allow_fallback,
+        prompt_template=prompt_template, 
     ))
 
     if not output:

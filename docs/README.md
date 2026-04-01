@@ -154,7 +154,7 @@ All tasks share a common schema — no separate ground-truth file needed.
   "function":         "calculate_variance",   // single function name (L1/L2)
   // "functions":     ["fn_a", "fn_b"],        // list for L3
   "query":            "Compute the variance of [2, 4, 6, 8, 10].",
-  "expected_params":  {"collection": [2,4,6,8,10]},   // optional; used for aux metrics
+  "expected_params":  {"collection": [2,4,6,8,10]},   // optional; aux metrics + non-deterministic pass checks
   "expected_outcome": 8.0,                    // compared against tool execution result
   "optimal_steps":    1
 }
