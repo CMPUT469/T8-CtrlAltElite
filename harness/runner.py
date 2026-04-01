@@ -129,19 +129,18 @@ DATASETS: dict[str, dict] = {
         "server": "mcp-server/main.py",
     },
     "finance": {
+        "tasks": {
+            "L1": "datasets/finance/tasks_l1.jsonl",
+            "L2": "datasets/finance/tasks_l2.jsonl",
+            "L3": "datasets/finance/tasks_l3.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
     "finance-v2": {
         "tasks": {
             "L1": "datasets/finance/tasks_l1_v2.jsonl",
             "L2": "datasets/finance/tasks_l2_v2.jsonl",
             "L3": "datasets/finance/tasks_l3_v2.jsonl",
-        },
-        "server": "mcp-server/main.py",
-    },
-    "finance": {
-        "tasks": {
-            "L1": "datasets/finance/tasks_l1.jsonl",
-            "L2": "datasets/finance/tasks_l2.jsonl",
-            "L3": "datasets/finance/tasks_l3.jsonl",
         },
         "server": "mcp-server/main.py",
     },
