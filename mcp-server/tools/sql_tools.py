@@ -252,10 +252,14 @@ def register_tools(mcp):
             result: List of rows as dictionaries
         """
         try:
+            normalized_sql = sql.strip().rstrip(";").strip()
             with _get_db_connection() as conn:
                 with conn.cursor() as cur:
                     safe_sql = "SELECT * FROM (%s) subq LIMIT %s"
-                    cur.execute(safe_sql, (psycopg2.extensions.AsIs(sql), limit))
+                    cur.execute(
+                        safe_sql,
+                        (psycopg2.extensions.AsIs(normalized_sql), limit),
+                    )
                     cols = [desc[0] for desc in cur.description]
                     rows = [dict(zip(cols, row)) for row in cur.fetchall()]
             return {"result": rows, "row_count": len(rows)}

@@ -112,6 +112,23 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
+    "postgres_stage1": {
+        "tasks": {
+            "L1": "datasets/postgres_stage1/tasks_l1.jsonl",
+            "L2": "datasets/postgres_stage1/tasks_l2.jsonl",
+            "L3": "datasets/postgres_stage1/tasks_l3.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
+    "postgres_stage1-v2": {
+        "tasks": {
+            "L1": "datasets/postgres_stage1/tasks_l1_v2.jsonl",
+            "L2": "datasets/postgres_stage1/tasks_l2_v2.jsonl",
+            "L3": "datasets/postgres_stage1/tasks_l3_v2.jsonl",
+        },
+        "server": "mcp-server/main.py",
+    },
+    "finance": {
     "finance-v2": {
         "tasks": {
             "L1": "datasets/finance/tasks_l1_v2.jsonl",
@@ -350,8 +367,21 @@ async def run_evaluation(
             }
 
             sys_content = "You are a helpful assistant. Use the provided tools when needed."
+  
             if prompt_template:
                 sys_content = prompt_template + "\n\n" + sys_content
+  
+            if dataset.startswith("postgres"):
+                sys_content += (
+                    "\n\nFor Postgres tasks:"
+                    "\n- Use exact schema, table, and column names returned by tools; never guess similar names."
+                    "\n- If you inspect tables or relationships first, you must still finish with execute_query when the task asks for a computed result."
+                    "\n- For execute_query, return one read-only SELECT statement with no trailing semicolon."
+                    "\n- Match requested output column names when practical by using SQL aliases."
+                    "\n- Do not change limit unless the task explicitly asks for a specific number of rows."
+                    "\n- Use joins and JSON field access only as supported by the inspected schema and tool outputs."
+                )
+           
             if allow_fallback:
                 sys_content += (
                     '\n\nIf you cannot emit a native tool call, respond with ONLY valid JSON: '
