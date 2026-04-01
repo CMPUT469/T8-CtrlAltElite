@@ -281,6 +281,7 @@ async def run_evaluation(
     limit: Optional[int],
     num_distractors: Optional[int],
     allow_fallback: bool,
+    prompt_template: Optional[str] = None,
 ) -> dict:
     from harness.mcp_session import filter_tools_for_task, mcp_session
     from harness.model_client import ModelClient
@@ -349,6 +350,8 @@ async def run_evaluation(
             }
 
             sys_content = "You are a helpful assistant. Use the provided tools when needed."
+            if prompt_template:
+                sys_content = prompt_template + "\n\n" + sys_content
             if allow_fallback:
                 sys_content += (
                     '\n\nIf you cannot emit a native tool call, respond with ONLY valid JSON: '
@@ -575,6 +578,14 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Oracle mode: expose only the reference tools per task")
     p.add_argument("--num-distractors", type=int, default=None)
     p.add_argument("--allow-fallback",  action="store_true")
+    p.add_argument(
+       "--prompt-template",
+       type=Path,
+       default=None,
+       metavar="FILE",
+       help="Path to a plain-text prompt template file. Its contents are "
+            "prepended to the system message for every task in the run.",
+    )
     p.add_argument("--output",   type=Path, default=None)
     return p
 
@@ -601,6 +612,15 @@ def main():
     print(f"  mode     : {'oracle' if num_distractors == 0 else 'standard' if num_distractors is None else f'{num_distractors} distractors'}")
     print("=" * 62)
 
+    prompt_template: Optional[str] = None
+    if args.prompt_template:
+       template_path = Path(args.prompt_template)
+       if not template_path.exists():
+           print(f"[error] prompt template not found: {template_path}")
+           sys.exit(1)
+       prompt_template = template_path.read_text(encoding="utf-8").strip()
+       print(f"  template : {template_path}")
+
     output = asyncio.run(run_evaluation(
         dataset=args.dataset,
         model_cfg=model_cfg,
@@ -608,6 +628,7 @@ def main():
         limit=args.limit,
         num_distractors=num_distractors,
         allow_fallback=args.allow_fallback,
+        prompt_template=prompt_template, 
     ))
 
     if not output:
