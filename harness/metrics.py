@@ -195,11 +195,21 @@ def serialize_tool_result(tool_result: Any) -> str:
 
 def wos(outcome: bool, optimal_steps: int, actual_steps: int) -> float:
     """
-    Weighted Outcome Score for a single task.
+    Evaluates agent accuracy based on success and path efficiency.
+    Penalizes both over-stepping (inefficiency) and under-stepping (skipping).
     """
-    if not outcome:
+    # If the task failed or no tools were used, the score is zero
+    if not outcome or actual_steps <= 0:
         return 0.0
-    return min(1.0, optimal_steps / max(actual_steps, 1))
+    
+    # Calculate the absolute difference from the golden path
+    deviation = abs(actual_steps - optimal_steps)
+    
+    # Using the optimal steps as the numerator ensures a score of 1.0 
+    # when deviation is 0. As deviation increases, the score drops.
+    accuracy_weight = optimal_steps / (optimal_steps + deviation)
+    
+    return round(accuracy_weight, 4)
 
 
 def calculate_metrics(details: list[dict], totals: dict) -> dict:
