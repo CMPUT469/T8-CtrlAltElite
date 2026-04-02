@@ -8,6 +8,19 @@ Statistical tools organized from basic to advanced for threshold testing.
 import math
 from typing import Dict, List
 
+try:
+    from scipy import stats as scipy_stats
+    _SCIPY_IMPORT_ERROR = None
+except Exception as exc:
+    scipy_stats = None
+    _SCIPY_IMPORT_ERROR = exc
+
+
+def _require_scipy_stats():
+    if scipy_stats is None:
+        raise RuntimeError(f"SciPy is unavailable: {_SCIPY_IMPORT_ERROR}")
+    return scipy_stats
+
 
 def register_tools(mcp):
     """Register all Jefferson statistical tools with the MCP server."""
@@ -114,7 +127,7 @@ def register_tools(mcp):
     def calculate_skewness(collection: List[float]) -> Dict:
         """Calculate the skewness (measure of asymmetry) of a collection."""
         try:
-            from scipy import stats
+            stats = _require_scipy_stats()
             return {"result": float(stats.skew(collection))}
         except Exception as e:
             return {"error": str(e)}
@@ -123,7 +136,7 @@ def register_tools(mcp):
     def calculate_kurtosis(collection: List[float]) -> Dict:
         """Calculate the kurtosis (measure of 'tailedness') of a collection."""
         try:
-            from scipy import stats
+            stats = _require_scipy_stats()
             return {"result": float(stats.kurtosis(collection))}
         except Exception as e:
             return {"error": str(e)}
@@ -132,7 +145,7 @@ def register_tools(mcp):
     def calculate_correlation(collection1: List[float], collection2: List[float]) -> Dict:
         """Calculate the Pearson correlation coefficient between two collections."""
         try:
-            from scipy import stats
+            stats = _require_scipy_stats()
             if len(collection1) != len(collection2):
                 return {"error": "Collections must be of the same length"}
             corr, p_value = stats.pearsonr(collection1, collection2)
@@ -158,7 +171,7 @@ def register_tools(mcp):
     def calculate_z_scores(collection: List[float]) -> Dict:
         """Calculate z-scores (standard scores) for a collection."""
         try:
-            from scipy import stats
+            stats = _require_scipy_stats()
             return {"z_scores": [float(z) for z in stats.zscore(collection)]}
         except Exception as e:
             return {"error": str(e)}
@@ -171,7 +184,7 @@ def register_tools(mcp):
     def perform_t_test(collection: List[float], popmean: float = 0) -> Dict:
         """Perform a one-sample t-test comparing a collection to a population mean."""
         try:
-            from scipy import stats
+            stats = _require_scipy_stats()
             t_stat, p_value = stats.ttest_1samp(collection, popmean)
             return {"t_statistic": float(t_stat), "p_value": float(p_value)}
         except Exception as e:
@@ -181,7 +194,7 @@ def register_tools(mcp):
     def calculate_confidence_interval(collection: List[float], confidence: float = 0.95) -> Dict:
         """Calculate the confidence interval for the mean of a collection."""
         try:
-            from scipy import stats
+            stats = _require_scipy_stats()
             mean = sum(collection) / len(collection)
             sem = stats.sem(collection)
             interval = sem * stats.t.ppf((1 + confidence) / 2, len(collection) - 1)
@@ -210,7 +223,7 @@ def register_tools(mcp):
     def perform_normality_test(collection: List[float]) -> Dict:
         """Test if a collection comes from a normal distribution using Shapiro-Wilk test."""
         try:
-            from scipy import stats
+            stats = _require_scipy_stats()
             stat, p_value = stats.shapiro(collection)
             return {
                 "statistic": float(stat), 
