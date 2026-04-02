@@ -1,21 +1,21 @@
 """
 Metrics for outcome-based evaluation.
-
 Primary metric: Weighted Outcome Score (WOS)
-
-    WOS(task) = outcome * (optimal_steps / actual_steps)
-
+    WOS(task) = optimal_steps / (optimal_steps + |actual_steps - optimal_steps|)
 - Wrong answer or no tool call -> 0.0
-- Correct, optimal path      -> 1.0
-- Correct, extra calls       -> optimal_steps / actual_steps
-
+- Correct, optimal path        -> 1.0
+- Correct, non-optimal path    -> optimal_steps / (optimal_steps + deviation)
     Aggregate WOS = mean(WOS per task) × 100  → reported as a percentage.
-
-This is TESR used directly as the outcome score. Binary outcome accuracy is
-the special case where every task has optimal_steps == actual_steps == 1,
-which gives WOS == outcome_accuracy. The weighting generalises it to
-penalise inefficient multi-step solutions without needing a separate metric.
-
+    
+Unlike a simple outcome * (optimal / actual) ratio, this formulation penalises
+both over-stepping (extra calls) and under-stepping (skipping required calls)
+symmetrically via the absolute deviation from the golden path length.
+ 
+Binary outcome accuracy is the special case where every task has
+optimal_steps == actual_steps == 1, which gives WOS == outcome_accuracy.
+The weighting generalises it to penalise inefficient solutions without needing
+a separate metric.
+ 
 Tool choice is intentionally not scored directly. If the model used the wrong
 tool, the result will generally be wrong and WOS captures that through E(O, Ô).
 For non-deterministic tasks, runner-level checks may use expected params as a
