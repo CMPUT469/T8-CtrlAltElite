@@ -39,6 +39,7 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -298,6 +299,7 @@ async def run_evaluation(
     num_distractors: Optional[int],
     allow_fallback: bool,
     prompt_template: Optional[str] = None,
+    debug_timing: bool = False,
 ) -> dict:
     from harness.mcp_session import filter_tools_for_task, mcp_session
     from harness.model_client import ModelClient
@@ -406,9 +408,23 @@ async def run_evaluation(
                 )
 
                 try:
+                    model_start = time.perf_counter()
+                    if debug_timing:
+                        print(
+                            f"    [debug] step {step + 1}: model call start "
+                            f"({len(tools_for_step)} tools)",
+                            flush=True,
+                        )
                     model_response = client.get_response(messages, tools_for_step)
+                    model_elapsed = time.perf_counter() - model_start
                     tool_call      = model_response.tool_call
                     record["raw_model_output"] = model_response.raw_text
+                    if debug_timing:
+                        print(
+                            f"    [debug] step {step + 1}: model call end "
+                            f"({model_elapsed:.2f}s)",
+                            flush=True,
+                        )
                 except Exception as exc:
                     record["error"] = f"Model call failed: {exc}"
                     totals["no_tool_call"] += 1
@@ -427,13 +443,27 @@ async def run_evaluation(
                 record["call_source"]    = tool_call.call_source
 
                 try:
+                    tool_start = time.perf_counter()
+                    if debug_timing:
+                        print(
+                            f"    [debug] step {step + 1}: tool call start "
+                            f"({tool_call.function_name})",
+                            flush=True,
+                        )
                     raw_result   = await session.call_tool(
                         tool_call.function_name, tool_call.arguments
                     )
+                    tool_elapsed = time.perf_counter() - tool_start
                     record["tool_result"]  = serialize_tool_result(raw_result)
                     result_value           = extract_result_value(raw_result)
                     step_results.append(result_value)
                     record["actual_result"] = result_value
+                    if debug_timing:
+                        print(
+                            f"    [debug] step {step + 1}: tool call end "
+                            f"({tool_elapsed:.2f}s)",
+                            flush=True,
+                        )
                 except Exception as exc:
                     record["error"] = f"Tool execution failed at step {step + 1}: {exc}"
                     totals["no_tool_call"] += 1
@@ -607,6 +637,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Oracle mode: expose only the reference tools per task")
     p.add_argument("--num-distractors", type=int, default=None)
     p.add_argument("--allow-fallback",  action="store_true")
+    p.add_argument("--debug-timing", action="store_true",
+                   help="Print per-step model and tool timing diagnostics")
     p.add_argument(
        "--prompt-template",
        type=Path,
@@ -657,7 +689,8 @@ def main():
         limit=args.limit,
         num_distractors=num_distractors,
         allow_fallback=args.allow_fallback,
-        prompt_template=prompt_template, 
+        prompt_template=prompt_template,
+        debug_timing=args.debug_timing,
     ))
 
     if not output:

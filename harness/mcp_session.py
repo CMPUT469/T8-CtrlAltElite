@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import random
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -29,8 +30,10 @@ async def mcp_session(server_script: str | Path):
     """
     server_script = Path(server_script)
     params = StdioServerParameters(
-        command="uv",
-        args=["run", "python", server_script.name],
+        # Use the same interpreter as the harness so local runs stay in the
+        # active virtual environment instead of depending on uv's runtime state.
+        command=sys.executable,
+        args=[server_script.name],
         env=dict(os.environ),
         cwd=str(server_script.parent),
     )
