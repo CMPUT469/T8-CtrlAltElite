@@ -1,21 +1,21 @@
 """
 Metrics for outcome-based evaluation.
-
 Primary metric: Weighted Outcome Score (WOS)
-
-    WOS(task) = outcome * (optimal_steps / actual_steps)
-
+    WOS(task) = optimal_steps / (optimal_steps + |actual_steps - optimal_steps|)
 - Wrong answer or no tool call -> 0.0
-- Correct, optimal path      -> 1.0
-- Correct, extra calls       -> optimal_steps / actual_steps
-
+- Correct, optimal path        -> 1.0
+- Correct, non-optimal path    -> optimal_steps / (optimal_steps + deviation)
     Aggregate WOS = mean(WOS per task) × 100  → reported as a percentage.
-
-This is TESR used directly as the outcome score. Binary outcome accuracy is
-the special case where every task has optimal_steps == actual_steps == 1,
-which gives WOS == outcome_accuracy. The weighting generalises it to
-penalise inefficient multi-step solutions without needing a separate metric.
-
+    
+Unlike a simple outcome * (optimal / actual) ratio, this formulation penalises
+both over-stepping (extra calls) and under-stepping (skipping required calls)
+symmetrically via the absolute deviation from the golden path length.
+ 
+Binary outcome accuracy is the special case where every task has
+optimal_steps == actual_steps == 1, which gives WOS == outcome_accuracy.
+The weighting generalises it to penalise inefficient solutions without needing
+a separate metric.
+ 
 Tool choice is intentionally not scored directly. If the model used the wrong
 tool, the result will generally be wrong and WOS captures that through E(O, Ô).
 For non-deterministic tasks, runner-level checks may use expected params as a
@@ -195,11 +195,21 @@ def serialize_tool_result(tool_result: Any) -> str:
 
 def wos(outcome: bool, optimal_steps: int, actual_steps: int) -> float:
     """
-    Weighted Outcome Score for a single task.
+    Evaluates agent accuracy based on success and path efficiency.
+    Penalizes both over-stepping (inefficiency) and under-stepping (skipping).
     """
-    if not outcome:
+    # If the task failed or no tools were used, the score is zero
+    if not outcome or actual_steps <= 0:
         return 0.0
-    return min(1.0, optimal_steps / max(actual_steps, 1))
+    
+    # Calculate the absolute difference from the golden path
+    deviation = abs(actual_steps - optimal_steps)
+    
+    # Using the optimal steps as the numerator ensures a score of 1.0 
+    # when deviation is 0. As deviation increases, the score drops.
+    accuracy_weight = optimal_steps / (optimal_steps + deviation)
+    
+    return round(accuracy_weight, 4)
 
 
 def calculate_metrics(details: list[dict], totals: dict) -> dict:
