@@ -1,0 +1,71 @@
+# configs/tool_order.yaml
+#
+# Defines the order in which tools are added per dataset for
+# incremental threshold evaluation. Round N exposes the first N
+# tools from each dataset's list.
+
+bfcl:
+  - add
+  - subtract
+  - multiply
+  - divide
+  - power
+  - square_root
+  - absolute_value
+  - round_number
+  - percentage
+  - sum_values
+  - mean
+  - min_value
+  - max_value
+  - standard_deviation
+  - logarithm
+
+jefferson:
+  - calculate_median
+  - calculate_mode
+  - calculate_range
+  - calculate_variance
+  - calculate_quartiles
+  - calculate_iqr
+  - calculate_skewness
+  - calculate_kurtosis
+  - calculate_correlation
+  - calculate_covariance
+  - calculate_z_scores
+  - perform_t_test
+  - calculate_confidence_interval
+  - detect_outliers
+  - perform_normality_test
+  - perform_linear_regression
+  - calculate_moving_average
+  - generate_descriptive_statistics
+
+postgres:
+  - list_tables
+  - describe_table
+  - execute_query
+  - get_row_count
+  - get_foreign_keys
+  - list_schemas
+  - find_relationships
+
+finance:
+  - get_income_statements
+  - get_balance_sheets
+  - get_cash_flow_statements
+  - get_current_stock_price
+  - get_historical_stock_prices
+  - get_company_news
+  - get_sec_filings
+  - getAnalystEstimates
+  - getFinancialMetrics
+  - getFinancialMetricsSnapshot
+  - getSegmentedRevenues
+  - getAvailableFilingItems
+  - getFilingItems
+  - getCompanyFacts
+  - get_available_crypto_tickers
+  - get_crypto_prices
+  - get_current_crypto_price
+  - get_historical_crypto_prices

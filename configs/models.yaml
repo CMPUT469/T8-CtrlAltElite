@@ -20,6 +20,21 @@ models:
     base_url: http://localhost:11434/v1
     api_key: none
 
+  - name: qwen3:8b
+    backend: ollama
+    base_url: http://localhost:11434/v1
+    api_key: none
+
+  - name: gpt-oss:20b
+    backend: ollama
+    base_url: http://localhost:11434/v1
+    api_key: none
+
+  - name: mistral:12b
+    backend: ollama
+    base_url: http://localhost:11434/v1
+    api_key: none
+
   # ── vLLM on Eureka (fill in once the cluster is provisioned) ─────────────
   # vLLM is launched with:
   #   vllm serve <model_id> --host 0.0.0.0 --port 8000 --api-key <token>
