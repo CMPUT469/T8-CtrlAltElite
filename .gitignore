@@ -40,6 +40,9 @@ bfcl_results_*
 # Logs
 *.log
 
+# Local overnight runner scripts
+run_overnight*.ps1
+
 # Environment variables
 .env
 .env.local
