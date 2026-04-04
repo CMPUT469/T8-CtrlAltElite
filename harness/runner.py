@@ -165,7 +165,7 @@ def load_tasks(dataset: str, levels: list[str], limit: Optional[int]) -> list[di
         if not path.exists():
             print(f"  [warn] task file not found: {path}, skipping")
             continue
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
