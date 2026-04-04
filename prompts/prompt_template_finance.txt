@@ -4,6 +4,15 @@ Below is a description of all 18 available finance tools, the parameters each on
 
 Important return-type note: each tool returns a string. For successful calls, that string is typically JSON-formatted text (an object or an array). If the API fails or no data is found, the tool returns a plain-text error/no-data string.
 
+PARAMETER REMINDERS FOR FINANCE TASKS
+
+- Use exact enum values. For quarterly requests, use `period="quarterly"`, not `quarter`.
+- Use exact SEC filing type strings. For quarterly filings, use `10-Q`, not `10Q`.
+- If the task asks for the latest N items, always pass `limit=N` explicitly, even if the tool has a default.
+- For `get_historical_stock_prices`, always include both `interval` and `interval_multiplier`.
+- For daily stock prices, use `interval="day"` and `interval_multiplier=1`.
+- For weekly stock prices, use `interval="week"` and `interval_multiplier=1`.
+
 ---
 
 COMPANY FINANCIAL STATEMENT TOOLS

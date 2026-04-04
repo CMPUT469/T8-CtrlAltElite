@@ -1,5 +1,6 @@
 import unittest
 
+from harness.model_client import _parse_fallback_json
 from harness.runner import (
     DATASETS,
     _compare_params_exact,
@@ -89,6 +90,54 @@ class StrictParamComparisonTests(unittest.TestCase):
         called = [{"ticker": "AAPL", "limit": 5, "period": "annual"}]
         expected = {"ticker": "AAPL", "limit": 5}
         self.assertFalse(_compare_step_params(called, expected, strict=True))
+
+
+class FallbackToolParsingTests(unittest.TestCase):
+    def test_accepts_name_arguments_shape_for_allowed_tool(self):
+        self.assertEqual(
+            _parse_fallback_json(
+                '{"name":"multiply","arguments":{"a":600,"b":0.2}}',
+                {"multiply"},
+            ),
+            {"tool": "multiply", "args": {"a": 600, "b": 0.2}},
+        )
+
+    def test_accepts_single_item_list_shape_for_allowed_tool(self):
+        self.assertEqual(
+            _parse_fallback_json(
+                '[{"name":"multiply","arguments":{"a":600,"b":0.2}}]',
+                {"multiply"},
+            ),
+            {"tool": "multiply", "args": {"a": 600, "b": 0.2}},
+        )
+
+    def test_accepts_two_item_array_shape_for_allowed_tool(self):
+        self.assertEqual(
+            _parse_fallback_json(
+                '["standard_deviation", {"numbers":[10,20,30,40,50]}]',
+                {"standard_deviation"},
+            ),
+            {
+                "tool": "standard_deviation",
+                "args": {"numbers": [10, 20, 30, 40, 50]},
+            },
+        )
+
+    def test_rejects_tool_not_in_allowed_set(self):
+        self.assertIsNone(
+            _parse_fallback_json(
+                '{"name":"division","arguments":{"a":600,"b":0.2}}',
+                {"multiply"},
+            )
+        )
+
+    def test_rejects_prose_wrapped_json(self):
+        self.assertIsNone(
+            _parse_fallback_json(
+                'Next step:\n{"name":"multiply","arguments":{"a":600,"b":0.2}}',
+                {"multiply"},
+            )
+        )
 
 
 class DatasetRegistryTests(unittest.TestCase):

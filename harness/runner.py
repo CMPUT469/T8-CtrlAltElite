@@ -385,8 +385,11 @@ async def run_evaluation(
            
             if allow_fallback:
                 sys_content += (
-                    '\n\nIf you cannot emit a native tool call, respond with ONLY valid JSON: '
-                    '{"tool":"<name>","args":{...}}'
+                    "\n\nPrefer native tool calls whenever the endpoint supports them."
+                    "\nOnly fall back to plain-text JSON if the endpoint cannot emit a native tool call."
+                    '\nIf you must fall back, respond with ONLY one JSON tool request and no prose, '
+                    'using an exact provided tool name and exact parameter names.'
+                    '\nPreferred fallback shape: {"tool":"<name>","args":{...}}'
                 )
             messages = [
                 {"role": "system", "content": sys_content},

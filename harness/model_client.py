@@ -137,7 +137,12 @@ class ModelClient:
 
         # 2. Fallback: model emitted JSON-in-text
         if self.allow_fallback and raw_text:
-            parsed = _parse_fallback_json(raw_text)
+            allowed_tool_names = {
+                tool["function"]["name"]
+                for tool in tools
+                if isinstance(tool, dict) and "function" in tool
+            }
+            parsed = _parse_fallback_json(raw_text, allowed_tool_names)
             if parsed:
                 return ModelResponse(
                     tool_call=ToolCall(
@@ -180,10 +185,20 @@ class ModelClient:
 # Helpers
 # ------------------------------------------------------------------
 
-def _parse_fallback_json(text: str) -> Optional[dict]:
+def _parse_fallback_json(
+    text: str,
+    allowed_tool_names: set[str] | None = None,
+) -> Optional[dict]:
     """
-    Parse {"tool": "<name>", "args": {...}} from a text response.
-    Strips markdown code fences if present.
+    Parse a strict JSON tool request from a text response.
+
+    Accepted shapes:
+      {"tool": "<name>", "args": {...}}
+      {"name": "<name>", "arguments": {...}}
+      [{"name": "<name>", "arguments": {...}}]
+
+    Strips markdown code fences if present, but rejects prose-wrapped JSON.
+    When allowed_tool_names is provided, the tool name must match exactly.
     """
     if not text:
         return None
@@ -193,14 +208,57 @@ def _parse_fallback_json(text: str) -> Optional[dict]:
         candidate = "\n".join(lines[1:-1]).strip() if len(lines) >= 3 else candidate.strip("`")
         if candidate.startswith("json"):
             candidate = candidate[4:].strip()
-    if not (candidate.startswith("{") and candidate.endswith("}")):
+    if not (
+        (candidate.startswith("{") and candidate.endswith("}"))
+        or (candidate.startswith("[") and candidate.endswith("]"))
+    ):
         return None
     try:
         payload = json.loads(candidate)
     except Exception:
         return None
-    if isinstance(payload, dict) and "tool" in payload and isinstance(payload.get("args"), dict):
-        return payload
+
+    normalized = _normalize_fallback_payload(payload)
+    if not normalized:
+        return None
+
+    tool_name = normalized["tool"]
+    if allowed_tool_names is not None and tool_name not in allowed_tool_names:
+        return None
+    return normalized
+
+
+def _normalize_fallback_payload(payload: Any) -> Optional[dict[str, Any]]:
+    """Normalize supported fallback payload shapes to {tool, args}."""
+    if isinstance(payload, list):
+        if (
+            len(payload) == 2
+            and isinstance(payload[0], str)
+            and isinstance(payload[1], dict)
+        ):
+            return {
+                "tool": payload[0],
+                "args": payload[1],
+            }
+        if len(payload) != 1:
+            return None
+        return _normalize_fallback_payload(payload[0])
+
+    if not isinstance(payload, dict):
+        return None
+
+    if isinstance(payload.get("tool"), str) and isinstance(payload.get("args"), dict):
+        return {
+            "tool": payload["tool"],
+            "args": payload["args"],
+        }
+
+    if isinstance(payload.get("name"), str) and isinstance(payload.get("arguments"), dict):
+        return {
+            "tool": payload["name"],
+            "args": payload["arguments"],
+        }
+
     return None
 
 
