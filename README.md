@@ -45,11 +45,35 @@ python -m harness.runner --dataset finance-v2 --model qwen2.5:7b --level L1
 
 `configs/models.yaml` is the runtime model registry. Runtime resolves model defaults from that file first, then applies any CLI overrides such as `--backend`, `--base-url`, and `--api-key`.
 
-## Threshold Sweep
+## Threshold Sweep (Distractor)
 
 ```powershell
 python -m harness.threshold_sweep --dataset bfcl --model qwen2.5:7b --sweep
 ```
+
+## Incremental Sweep (Tool-Count Threshold)
+
+Grows the tool set one tool at a time per dataset and evaluates only tasks satisfiable by the current tool set. Measures at what tool count each model's accuracy starts declining.
+
+```bash
+# Run a single round (N tools per dataset, minimum 2)
+python -m harness.incremental_sweep --model qwen3:8b --round 2
+python -m harness.incremental_sweep --model qwen3:8b --round 3
+
+# Run the full sweep (rounds 2 through max, resumable)
+python -m harness.incremental_sweep --model qwen3:8b --sweep
+
+# Run all 4 models via orchestration script
+bash run_incremental_sweep.sh
+
+# Run specific models
+bash run_incremental_sweep.sh qwen3:8b mistral:12b
+
+# Compare results across models
+python -m harness.incremental_sweep --compare --models qwen3:8b gpt-oss:20b mistral:12b llama3.1:8b
+```
+
+Results are saved per-round to `results/incremental/` and the sweep auto-resumes if interrupted. Tool addition order is configured in `configs/tool_order.yaml`.
 
 ## PostgreSQL Setup
 
