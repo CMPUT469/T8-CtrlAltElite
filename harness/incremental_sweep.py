@@ -424,11 +424,19 @@ def _load_all_rounds(model: str, max_round: int) -> list[tuple[int, dict]]:
 # Sweep
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _sweep(model_cfg: ModelConfig, tool_order: dict, prompt_template: Optional[str] = None):
+def _sweep(
+    model_cfg: ModelConfig,
+    tool_order: dict,
+    prompt_template: Optional[str] = None,
+    from_round: int = 2,
+    to_round: Optional[int] = None,
+):
     max_n = _max_round(tool_order)
+    start = max(from_round, 2)
+    end = min(to_round, max_n) if to_round is not None else max_n
     results: list[tuple[int, dict]] = []
 
-    for n in range(2, max_n + 1):
+    for n in range(start, end + 1):
         # Skip if already on disk
         existing = _load_round(model_cfg.name, n)
         if existing:
@@ -618,6 +626,10 @@ def main():
                    help="Run a single round with N tools per dataset")
     p.add_argument("--sweep", action="store_true",
                    help="Run full sweep from 2 tools to max")
+    p.add_argument("--from-round", type=int, default=2,
+                   help="First round in sweep range (default: 2)")
+    p.add_argument("--to-round", type=int, default=None,
+                   help="Last round in sweep range (default: max tools)")
     p.add_argument("--compare", action="store_true",
                    help="Cross-model comparison from saved results")
     p.add_argument("--models", nargs="+", default=None,
@@ -664,7 +676,8 @@ def main():
         return
 
     if args.sweep:
-        _sweep(model_cfg, tool_order, prompt_template)
+        _sweep(model_cfg, tool_order, prompt_template,
+               from_round=args.from_round, to_round=args.to_round)
         return
 
     p.print_help()
