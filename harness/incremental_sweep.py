@@ -53,18 +53,26 @@ RESULTS_DIR = Path("results/incremental")
 _DATASET_TO_ORDER_KEY = {
     "bfcl": "bfcl",
     "bfcl-v2": "bfcl",
+    "bfcl-inc": "bfcl",
     "jefferson": "jefferson",
     "jefferson-v2": "jefferson",
+    "jefferson-inc": "jefferson",
     "postgres": "postgres",
     "postgres-v2": "postgres",
+    "postgres-inc": "postgres",
     "postgres_stage1": "postgres",
     "postgres_stage1-v2": "postgres",
     "finance": "finance",
     "finance-v2": "finance",
+    "finance-inc": "finance",
 }
 
-# Datasets evaluated in each round (one per domain).
-SWEEP_DATASETS = ["bfcl", "jefferson", "postgres", "finance"]
+# Datasets evaluated in each round (one per domain). Selected by --task-set.
+SWEEP_DATASETS_BY_SET = {
+    "combined": ["bfcl", "jefferson", "postgres", "finance"],
+    "incremental": ["bfcl-inc", "jefferson-inc", "postgres-inc", "finance-inc"],
+}
+SWEEP_DATASETS = SWEEP_DATASETS_BY_SET["combined"]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -134,8 +142,12 @@ async def _run_round(
             continue
         available = set(round_tools)
 
-        # Load ALL tasks (L1-L3) and keep only satisfiable ones
-        tasks = load_tasks(dataset, ["L1", "L2", "L3"], limit=None)
+        # Load tasks and keep only satisfiable ones.
+        # -inc datasets use a single merged file registered under L1.
+        if dataset.endswith("-inc"):
+            tasks = load_tasks(dataset, ["L1"], limit=None)
+        else:
+            tasks = load_tasks(dataset, ["L1", "L2", "L3"], limit=None)
         tasks = _filter_tasks_for_round(tasks, available)
         if not tasks:
             per_dataset[dataset] = {"tools": len(round_tools), "tasks": 0, "wos": 0.0}
@@ -146,7 +158,7 @@ async def _run_round(
         print(f"{'─'*62}")
 
         server_script = DATASETS[dataset]["server"]
-        strict = dataset in {"finance", "finance-v2"}
+        strict = dataset in {"finance", "finance-v2", "finance-inc"}
 
         async with mcp_session(server_script) as (session, openai_tools):
             # Filter the MCP tool list to only this round's tools
@@ -385,20 +397,22 @@ async def _run_round(
 # Persistence
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _save(output: dict) -> Path:
+def _save(output: dict, task_set: str = "combined") -> Path:
     model_safe = output["model"].replace(":", "_").replace("/", "_")
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = RESULTS_DIR / f"incremental_{model_safe}_round{output['round']}_{ts}.json"
+    suffix = "" if task_set == "combined" else f"_{task_set}"
+    path = RESULTS_DIR / f"incremental_{model_safe}{suffix}_round{output['round']}_{ts}.json"
     with open(path, "w") as f:
         json.dump(output, f, indent=2)
     return path
 
 
-def _load_round(model: str, round_num: int) -> Optional[dict]:
+def _load_round(model: str, round_num: int, task_set: str = "combined") -> Optional[dict]:
     """Load the most recent result for a given model/round."""
     model_safe = model.replace(":", "_").replace("/", "_")
-    pattern = f"incremental_{model_safe}_round{round_num}_*.json"
+    suffix = "" if task_set == "combined" else f"_{task_set}"
+    pattern = f"incremental_{model_safe}{suffix}_round{round_num}_*.json"
     matches = sorted(RESULTS_DIR.glob(pattern), reverse=True) if RESULTS_DIR.exists() else []
     for f in matches:
         try:
@@ -410,11 +424,11 @@ def _load_round(model: str, round_num: int) -> Optional[dict]:
     return None
 
 
-def _load_all_rounds(model: str, max_round: int) -> list[tuple[int, dict]]:
+def _load_all_rounds(model: str, max_round: int, task_set: str = "combined") -> list[tuple[int, dict]]:
     """Load saved results for rounds 2..max_round."""
     results = []
     for n in range(2, max_round + 1):
-        data = _load_round(model, n)
+        data = _load_round(model, n, task_set)
         if data:
             results.append((n, data))
     return results
@@ -430,6 +444,7 @@ def _sweep(
     prompt_template: Optional[str] = None,
     from_round: int = 2,
     to_round: Optional[int] = None,
+    task_set: str = "combined",
 ):
     max_n = _max_round(tool_order)
     start = max(from_round, 2)
@@ -438,7 +453,7 @@ def _sweep(
 
     for n in range(start, end + 1):
         # Skip if already on disk
-        existing = _load_round(model_cfg.name, n)
+        existing = _load_round(model_cfg.name, n, task_set)
         if existing:
             print(f"\n  [skip] round {n} already on disk")
             results.append((n, existing))
@@ -449,7 +464,7 @@ def _sweep(
         print(f"{'='*62}")
 
         output = asyncio.run(_run_round(n, model_cfg, tool_order, prompt_template))
-        path = _save(output)
+        path = _save(output, task_set)
         results.append((n, output))
 
         print(f"\n  Round {n} WOS: {output['metrics']['wos']}%  → saved {path}")
@@ -506,13 +521,13 @@ def _print_sweep_summary(results: list[tuple[int, dict]], model: str):
 # Cross-model comparison
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _compare_models(models: list[str]):
+def _compare_models(models: list[str], task_set: str = "combined"):
     tool_order = _load_tool_order()
     max_n = _max_round(tool_order)
 
     model_rounds: dict[str, list[tuple[int, dict]]] = {}
     for model in models:
-        rounds = _load_all_rounds(model, max_n)
+        rounds = _load_all_rounds(model, max_n, task_set)
         if rounds:
             model_rounds[model] = rounds
         else:
@@ -636,13 +651,20 @@ def main():
                    help="Models to compare (used with --compare)")
     p.add_argument("--prompt-template", type=Path, default=None, metavar="FILE",
                    help="Path to a prompt template file")
+    p.add_argument("--task-set", choices=["combined", "incremental"], default="combined",
+                   help="Which task files to use: 'combined' (existing L1/L2/L3) or "
+                        "'incremental' (merged tasks_incremental.jsonl with >=15 per tool)")
     args = p.parse_args()
+
+    # Swap SWEEP_DATASETS based on task_set selection
+    global SWEEP_DATASETS
+    SWEEP_DATASETS = SWEEP_DATASETS_BY_SET[args.task_set]
 
     # ── Compare mode (no model required) ──
     if args.compare:
         if not args.models:
             p.error("--compare requires --models <model1> <model2> ...")
-        _compare_models(args.models)
+        _compare_models(args.models, args.task_set)
         return
 
     # ── All other modes require --model ──
@@ -670,14 +692,15 @@ def main():
         if args.round < 2:
             p.error("--round must be >= 2 (minimum 2 tools per dataset)")
         output = asyncio.run(_run_round(args.round, model_cfg, tool_order, prompt_template))
-        path = _save(output)
+        path = _save(output, args.task_set)
         print_report(output["metrics"], model_cfg.name, "incremental")
         print(f"Saved → {path}")
         return
 
     if args.sweep:
         _sweep(model_cfg, tool_order, prompt_template,
-               from_round=args.from_round, to_round=args.to_round)
+               from_round=args.from_round, to_round=args.to_round,
+               task_set=args.task_set)
         return
 
     p.print_help()

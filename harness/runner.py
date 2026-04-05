@@ -145,6 +145,23 @@ DATASETS: dict[str, dict] = {
         },
         "server": "mcp-server/main.py",
     },
+    # Incremental-sweep task sets: one merged file per domain with >=15 tasks per tool.
+    "bfcl-inc": {
+        "tasks": {"L1": "datasets/bfcl_math/tasks_incremental.jsonl"},
+        "server": "mcp-server/main.py",
+    },
+    "jefferson-inc": {
+        "tasks": {"L1": "datasets/jefferson_stats/tasks_incremental.jsonl"},
+        "server": "mcp-server/main.py",
+    },
+    "postgres-inc": {
+        "tasks": {"L1": "datasets/postgres/tasks_incremental.jsonl"},
+        "server": "mcp-server/main.py",
+    },
+    "finance-inc": {
+        "tasks": {"L1": "datasets/finance/tasks_incremental.jsonl"},
+        "server": "mcp-server/main.py",
+    },
 }
 
 RESULTS_DIR = Path("results")
