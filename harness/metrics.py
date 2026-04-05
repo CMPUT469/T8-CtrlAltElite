@@ -33,6 +33,56 @@ def _is_schema_metadata_dict(value: Any) -> bool:
     return isinstance(value, dict) and {"schema_name", "owner", "has_usage"}.issubset(value)
 
 
+def _compare_lists_unordered(
+    actual: list[Any],
+    expected: list[Any],
+    tolerance: float,
+) -> bool:
+    """
+    Compare lists as multisets while preserving strict value equality.
+
+    This avoids failing deterministic tasks purely because a model returned
+    the correct rows in a different order than the benchmark artifact.
+    """
+    if len(actual) != len(expected):
+        return False
+
+    unmatched_actual = list(actual)
+    for exp_item in expected:
+        match_index = next(
+            (
+                i
+                for i, act_item in enumerate(unmatched_actual)
+                if compare_values(act_item, exp_item, tolerance)
+            ),
+            None,
+        )
+        if match_index is None:
+            return False
+        unmatched_actual.pop(match_index)
+    return True
+
+
+def _compare_dict_values_by_position(
+    actual: dict[Any, Any],
+    expected: dict[Any, Any],
+    tolerance: float,
+) -> bool:
+    """
+    Compare row-like dicts by column position and values while ignoring the
+    output alias text.
+
+    Python preserves insertion order for dicts, so the row values reflect the
+    output column order returned by the SQL execution engine.
+    """
+    if len(actual) != len(expected):
+        return False
+    return all(
+        compare_values(act_val, exp_val, tolerance)
+        for act_val, exp_val in zip(actual.values(), expected.values())
+    )
+
+
 def compare_values(actual: Any, expected: Any, tolerance: float = 0.01) -> bool:
     """
     Deep equality with numeric tolerance.
@@ -50,9 +100,11 @@ def compare_values(actual: Any, expected: Any, tolerance: float = 0.01) -> bool:
         pass
 
     if isinstance(actual, (list, tuple)) and isinstance(expected, (list, tuple)):
-        return len(actual) == len(expected) and all(
-            compare_values(a, e, tolerance) for a, e in zip(actual, expected)
-        )
+        if len(actual) != len(expected):
+            return False
+        if all(compare_values(a, e, tolerance) for a, e in zip(actual, expected)):
+            return True
+        return _compare_lists_unordered(list(actual), list(expected), tolerance)
 
     if isinstance(actual, dict) and isinstance(expected, dict):
         # Schema owners can legitimately vary by local Postgres environment
@@ -68,10 +120,16 @@ def compare_values(actual: Any, expected: Any, tolerance: float = 0.01) -> bool:
                 for k in comparable_expected
             )
 
-        return all(
+        if all(
             k in actual and compare_values(actual[k], expected[k], tolerance)
             for k in expected
-        )
+        ):
+            return True
+
+        # For SQL result rows, treat output aliases as presentation details:
+        # if the row has the same number of columns and the column values
+        # match in position, do not fail solely because alias text differs.
+        return _compare_dict_values_by_position(actual, expected, tolerance)
 
     return False
 
