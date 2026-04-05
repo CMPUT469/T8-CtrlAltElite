@@ -418,6 +418,25 @@ _S20 = [100, 100, 100, 200, 200, 300]
 _SERIES_POOL = [_S1, _S2, _S3, _S4, _S5, _S6, _S7, _S8, _S9, _S10,
                 _S11, _S12, _S13, _S14, _S15, _S16, _S17, _S18, _S19, _S20]
 
+# Dedicated pool for calculate_mode — every series must have at least one repeated value.
+_MODE_SERIES_POOL = [
+    [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5],       # mode=5
+    [1, 2, 2, 3, 3, 3, 4, 4, 5],              # mode=3
+    [10, 15, 10, 20, 10, 25, 10, 30],          # mode=10
+    [7, 7, 7, 8, 8, 9, 10, 10],               # mode=7
+    [100, 100, 100, 200, 200, 300],            # mode=100
+    [2, 4, 4, 4, 5, 5, 7, 9],                 # mode=4
+    [8, 8, 9, 9, 9, 10, 11, 11],              # mode=9
+    [1, 1, 2, 3, 3, 3, 4, 5, 5],              # mode=3
+    [20, 20, 20, 30, 40, 40, 50],             # mode=20
+    [6, 6, 7, 7, 7, 8, 9, 9],                # mode=7
+    [50, 50, 60, 70, 70, 70, 80],             # mode=70
+    [1, 2, 2, 3, 4, 4, 4, 5, 6],             # mode=4
+    [15, 15, 15, 20, 25, 30, 30],             # mode=15
+    [5, 5, 6, 6, 6, 7, 8, 9, 9],             # mode=6
+    [100, 200, 200, 200, 300, 400, 400],      # mode=200
+]
+
 _JEFFERSON_QUERIES = {
     "calculate_median": [
         "Find the median of {data}.",
@@ -665,7 +684,9 @@ def gen_jefferson_padding(gap_per_tool: dict[str, int]) -> list[dict]:
         if needed <= 0:
             continue
         for k in range(needed):
-            series = _SERIES_POOL[k % len(_SERIES_POOL)]
+            # Mode requires repeated values — use dedicated pool to avoid all-unique series.
+            pool = _MODE_SERIES_POOL if tool == "calculate_mode" else _SERIES_POOL
+            series = pool[k % len(pool)]
             qtmpl = queries[k % len(queries)]
             params = {"collection": list(series)}
             if tool == "perform_t_test":
