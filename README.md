@@ -53,10 +53,10 @@ python -m harness.threshold_sweep --dataset bfcl --model qwen2.5:7b --sweep
 
 ## Incremental Sweep (Tool-Count Threshold)
 
-Grows the tool set one tool at a time per dataset and evaluates only tasks satisfiable by the current tool set. Measures at what tool count each model's accuracy starts declining.
+Starts from 2 tools per dataset, then grows tool exposure in fixed-size rounds. If one dataset runs out of tools early, its freed slot is reassigned to the dataset(s) with the largest remaining tool inventories. The sweep evaluates only tasks satisfiable by the currently exposed tools and measures when model accuracy starts declining.
 
 ```bash
-# Run a single round (N tools per dataset, minimum 2)
+# Run a single scheduled round (minimum round is 2)
 python -m harness.incremental_sweep --model qwen3:8b --round 2
 python -m harness.incremental_sweep --model qwen3:8b --round 3
 

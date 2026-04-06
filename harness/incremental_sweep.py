@@ -1,16 +1,17 @@
 """
 Incremental tool-count threshold evaluation.
 
-Grows the tool set one tool at a time per dataset, adding each tool's
-corresponding tasks as they become satisfiable.  This measures how
-models cope with an increasing number of *real* tools — not random
-distractors.
+Grows the tool set in fixed-size rounds, adding one tool per dataset
+while capacity remains. When a dataset exhausts its tool list, that
+freed slot is reassigned to the dataset(s) with the largest remaining
+tool inventories. This measures how models cope with an increasing
+number of *real* tools — not random distractors.
 
 Usage:
-    # Run one round (N tools per dataset)
+    # Run one scheduled round
     python -m harness.incremental_sweep --model qwen3:8b --round 3
 
-    # Run full sweep (2 tools → all tools, stepping by 1)
+    # Run full sweep from the 2-tools-per-dataset baseline
     python -m harness.incremental_sweep --model qwen3:8b --sweep
 
     # Compare models from saved results
@@ -43,7 +44,6 @@ from harness.metrics import (
     wos,
 )
 from harness.model_client import ModelClient, ModelConfig, resolve_model_config
-from harness.runner import DATASETS, load_tasks
 
 TOOL_ORDER_PATH = Path("configs/tool_order.yaml")
 RESULTS_DIR = Path("results/incremental")
@@ -91,9 +91,83 @@ def _tools_for_round(tool_order: dict[str, list[str]], dataset: str, n: int) -> 
     return all_tools[:n]
 
 
+def _tool_limit_for_dataset(tool_order: dict[str, list[str]], dataset: str) -> int:
+    """Return the total number of tools configured for *dataset*."""
+    key = _DATASET_TO_ORDER_KEY.get(dataset, dataset)
+    return len(tool_order.get(key, []))
+
+
+def _build_round_schedule(tool_order: dict[str, list[str]]) -> list[dict[str, int]]:
+    """
+    Build the per-round tool counts for each dataset.
+
+    Round 2 starts from the historical baseline of 2 tools per dataset.
+    Each later round adds one tool per dataset that still has spare
+    capacity. Slots freed by exhausted datasets are reassigned to the
+    dataset(s) with the largest remaining tool inventories.
+    """
+    order = list(SWEEP_DATASETS)
+    if not order:
+        return []
+
+    limits = {dataset: _tool_limit_for_dataset(tool_order, dataset) for dataset in order}
+    current = {dataset: min(2, limits[dataset]) for dataset in order}
+    schedule = [current.copy()]
+    order_index = {dataset: idx for idx, dataset in enumerate(order)}
+
+    while any(current[dataset] < limits[dataset] for dataset in order):
+        next_counts = current.copy()
+        spare_slots = 0
+
+        for dataset in order:
+            if next_counts[dataset] < limits[dataset]:
+                next_counts[dataset] += 1
+            else:
+                spare_slots += 1
+
+        while spare_slots > 0:
+            candidates = [
+                dataset for dataset in order if next_counts[dataset] < limits[dataset]
+            ]
+            if not candidates:
+                break
+
+            pick = max(
+                candidates,
+                key=lambda dataset: (
+                    limits[dataset],
+                    limits[dataset] - next_counts[dataset],
+                    -order_index[dataset],
+                ),
+            )
+            next_counts[pick] += 1
+            spare_slots -= 1
+
+        if next_counts == current:
+            break
+
+        schedule.append(next_counts.copy())
+        current = next_counts
+
+    return schedule
+
+
+def _round_tool_counts(tool_order: dict[str, list[str]], round_num: int) -> dict[str, int]:
+    """Return the scheduled tool count per dataset for *round_num*."""
+    if round_num < 2:
+        raise ValueError("round_num must be >= 2")
+
+    schedule = _build_round_schedule(tool_order)
+    idx = round_num - 2
+    if idx >= len(schedule):
+        raise ValueError(f"round {round_num} is out of range for the current schedule")
+    return schedule[idx]
+
+
 def _max_round(tool_order: dict[str, list[str]]) -> int:
-    """Longest tool list across all sweep datasets."""
-    return max(len(tool_order.get(_DATASET_TO_ORDER_KEY[d], [])) for d in SWEEP_DATASETS)
+    """Final scheduled round before every dataset reaches its tool cap."""
+    schedule = _build_round_schedule(tool_order)
+    return len(schedule) + 1 if schedule else 1
 
 
 def _filter_tasks_for_round(tasks: list[dict], available: set[str]) -> list[dict]:
@@ -121,10 +195,11 @@ async def _run_round(
     """
     Run evaluation for one round across all SWEEP_DATASETS.
 
-    For each dataset the model sees exactly the first *round_num* tools
-    and only tasks that those tools can satisfy.
+    For each dataset the model sees the scheduled number of tools for
+    this round, and only tasks that those tools can satisfy.
     """
     from harness.mcp_session import mcp_session
+    from harness.runner import DATASETS, load_tasks
 
     all_details: list[dict] = []
     totals = {
@@ -136,8 +211,10 @@ async def _run_round(
     }
     per_dataset: dict[str, dict] = {}
 
+    round_tool_counts = _round_tool_counts(tool_order, round_num)
+
     for dataset in SWEEP_DATASETS:
-        round_tools = _tools_for_round(tool_order, dataset, round_num)
+        round_tools = _tools_for_round(tool_order, dataset, round_tool_counts.get(dataset, 0))
         if not round_tools:
             continue
         available = set(round_tools)
@@ -459,8 +536,10 @@ def _sweep(
             results.append((n, existing))
             continue
 
+        round_counts = _round_tool_counts(tool_order, n)
+        total_tools = sum(round_counts.values())
         print(f"\n{'='*62}")
-        print(f"  Round {n}  ({n} tools per dataset)")
+        print(f"  Round {n}  ({total_tools} tools total)")
         print(f"{'='*62}")
 
         output = asyncio.run(_run_round(n, model_cfg, tool_order, prompt_template))
