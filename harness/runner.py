@@ -741,7 +741,12 @@ def main():
 
     try:
         from harness.db_logger import log_run
-        log_run(output, suite=args.dataset, num_distractors=num_distractors)
+        log_run(
+            output,
+            suite=args.dataset,
+            num_distractors=num_distractors,
+            prompt_template=args.prompt_template,
+        )
     except Exception:
         pass
 

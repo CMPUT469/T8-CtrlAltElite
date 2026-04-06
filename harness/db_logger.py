@@ -56,6 +56,7 @@ def log_run(
     output: dict,
     suite: str,
     num_distractors: Optional[int] = None,
+    prompt_template: Optional[str] = None,
 ) -> Optional[str]:
     """
     Upload one completed run (as returned by runner.run_evaluation) to Supabase.
@@ -64,6 +65,7 @@ def log_run(
         output:          the dict returned by harness.runner.run_evaluation()
         suite:           dataset name, e.g. "jefferson" or "bfcl"
         num_distractors: distractor count used in this run (None = standard mode)
+        prompt_template: path to prompt template file used for this run, or None
 
     Returns:
         run_id (uuid string) on success, None if skipped or failed.
@@ -76,6 +78,13 @@ def log_run(
     metrics = output.get("metrics", {})
     details = output.get("details", [])
     ts      = output.get("timestamp") or datetime.now(timezone.utc).isoformat()
+    prompt_template_used = bool(prompt_template)
+
+    # Always persist prompt-template metadata in raw_metrics so this information
+    # survives even if top-level columns are missing in older Supabase schemas.
+    metrics_for_storage = dict(metrics)
+    metrics_for_storage["prompt_template_used"] = prompt_template_used
+    metrics_for_storage["prompt_template"] = prompt_template
 
     try:
         # ── Insert run summary row ────────────────────────────────────────
@@ -84,6 +93,8 @@ def log_run(
             "timestamp":              ts,
             "test_suite":             suite,
             "num_distractors":        num_distractors,
+            "prompt_template_used":   prompt_template_used,
+            "prompt_template":        prompt_template,
 
             # Single primary metric
             "wos":        metrics.get("wos"),
@@ -98,10 +109,27 @@ def log_run(
             # Keep wrong_params queryable at the top level for dashboards.
             "wrong_params": metrics.get("wrong_params"),
 
-            "raw_metrics":            metrics,
+            "raw_metrics":            metrics_for_storage,
         }
 
-        resp   = client.table("test_runs").insert(run_row).execute()
+        try:
+            resp = client.table("test_runs").insert(run_row).execute()
+        except Exception as exc:
+            msg = str(exc).lower()
+            if (
+                "column" in msg
+                and "does not exist" in msg
+                and "prompt_template" in msg
+            ):
+                # Backward compatibility: DB schema without prompt-template columns.
+                # Keep data in raw_metrics and retry without top-level fields.
+                fallback_row = dict(run_row)
+                fallback_row.pop("prompt_template_used", None)
+                fallback_row.pop("prompt_template", None)
+                print("[db_logger] prompt_template columns missing; storing only in raw_metrics")
+                resp = client.table("test_runs").insert(fallback_row).execute()
+            else:
+                raise
         run_id = resp.data[0]["id"]
 
         # ── Insert per-task detail rows ───────────────────────────────────
