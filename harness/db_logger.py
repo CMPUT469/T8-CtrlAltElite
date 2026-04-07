@@ -56,7 +56,7 @@ def log_run(
     output: dict,
     suite: str,
     num_distractors: Optional[int] = None,
-    prompt_template: Optional[str] = None,
+    prompt_template: Optional[object] = None,
 ) -> Optional[str]:
     """
     Upload one completed run (as returned by runner.run_evaluation) to Supabase.
@@ -65,7 +65,7 @@ def log_run(
         output:          the dict returned by harness.runner.run_evaluation()
         suite:           dataset name, e.g. "jefferson" or "bfcl"
         num_distractors: distractor count used in this run (None = standard mode)
-        prompt_template: path to prompt template file used for this run, or None
+        prompt_template: path-like prompt template identifier used for this run, or None
 
     Returns:
         run_id (uuid string) on success, None if skipped or failed.
@@ -78,6 +78,7 @@ def log_run(
     metrics = output.get("metrics", {})
     details = output.get("details", [])
     ts      = output.get("timestamp") or datetime.now(timezone.utc).isoformat()
+    prompt_template = str(prompt_template) if prompt_template else None
     prompt_template_used = bool(prompt_template)
 
     # Always persist prompt-template metadata in raw_metrics so this information

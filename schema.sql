@@ -45,3 +45,6 @@ CREATE INDEX IF NOT EXISTS idx_test_details_run_id ON test_details(run_id);
 
 ALTER TABLE test_runs
 ADD COLUMN IF NOT EXISTS prompt_template text DEFAULT NULL;
+
+ALTER TABLE test_runs
+ADD COLUMN IF NOT EXISTS prompt_template_used boolean DEFAULT NULL;

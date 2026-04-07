@@ -745,7 +745,7 @@ def main():
             output,
             suite=args.dataset,
             num_distractors=num_distractors,
-            prompt_template=args.prompt_template,
+            prompt_template=str(args.prompt_template) if args.prompt_template else None,
         )
     except Exception:
         pass
