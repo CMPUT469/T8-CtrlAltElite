@@ -64,6 +64,18 @@ from harness.model_client import ModelClient, ModelConfig, resolve_model_config
 # Dataset registry
 # ──────────────────────────────────────────────────────────────────────────────
 
+AGENTIC_LOOP_FOOTER = """
+TOOL-CALLING DISCIPLINE
+- Never describe or narrate a tool call in text — always execute it directly.
+- After receiving a tool result, immediately determine whether another tool \
+call is required and make it. Do not summarise intermediate results in text \
+until all tool calls are complete.
+- When a condition gates the next step (e.g. "if result > X call tool A, \
+otherwise call tool B"), evaluate the condition from the previous tool result \
+and call the correct next tool immediately.
+- Complete all required tool calls before writing any final response.
+""".strip()
+
 DATASETS: dict[str, dict] = {
     "jefferson": {
         "tasks": {
@@ -368,10 +380,12 @@ async def run_evaluation(
             }
 
             sys_content = "You are a helpful assistant. Use the provided tools when needed."
-  
+
             if prompt_template:
                 sys_content = prompt_template + "\n\n" + sys_content
-  
+
+            sys_content += "\n\n" + AGENTIC_LOOP_FOOTER
+            
             if dataset.startswith("postgres"):
                 sys_content += (
                     "\n\nFor Postgres tasks:"
@@ -437,6 +451,20 @@ async def run_evaluation(
                     if step == 0:
                         record["error"] = "Model made no tool call"
                         totals["no_tool_call"] += 1
+                        break
+                    # Mid-chain stop: nudge the model to continue if steps remain
+                    steps_done = record["actual_steps"]
+                    steps_needed = optimal_steps
+                    if steps_done < steps_needed:
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"Continue. You have completed {steps_done} of "
+                                f"{steps_needed} required steps. "
+                                "Call the next required tool now."
+                            ),
+                        })
+                        continue  
                     break
 
                 record["actual_steps"] += 1
@@ -713,7 +741,12 @@ def main():
 
     try:
         from harness.db_logger import log_run
-        log_run(output, suite=args.dataset, num_distractors=num_distractors)
+        log_run(
+            output,
+            suite=args.dataset,
+            num_distractors=num_distractors,
+            prompt_template=str(args.prompt_template) if args.prompt_template else None,
+        )
     except Exception:
         pass
 

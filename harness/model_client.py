@@ -126,9 +126,10 @@ class ModelClient:
         # 1. Native tool call (preferred path for both Ollama and vLLM)
         if getattr(message, "tool_calls", None):
             tc = message.tool_calls[0]
+            fn_name = tc.function.name.split("<|")[0].strip()
             return ModelResponse(
                 tool_call=ToolCall(
-                    function_name=tc.function.name,
+                    function_name=fn_name,
                     arguments=json.loads(tc.function.arguments or "{}"),
                     call_source="native",
                 ),
