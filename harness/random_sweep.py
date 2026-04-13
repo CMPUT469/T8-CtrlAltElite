@@ -18,14 +18,14 @@ from baseline.
 
 Usage
 -----
-# Random shuffle each run, default 5 anchors per dataset
+# Random shuffle each run, default 5 anchor tools per dataset
 python -m harness.random_sweep --model qwen2.5:7b
 
 # Reproducible
 python -m harness.random_sweep --model qwen2.5:7b --seed 42
 
-# More anchors for a tighter signal
-python -m harness.random_sweep --model qwen2.5:7b --anchors-per-dataset 10
+# More anchor tools for a tighter signal (each tool brings all its L1 tasks)
+python -m harness.random_sweep --model qwen2.5:7b --anchor-tools-per-dataset 10
 
 # Resume / partial
 python -m harness.random_sweep --model qwen2.5:7b --seed 42 --from-step 20 --to-step 40
@@ -98,17 +98,18 @@ def _task_required_tools(task: dict) -> list[str]:
 
 def _select_anchor_tasks(
     tasks: list[dict],
-    count: int,
+    tool_count: int,
 ) -> list[dict]:
     """
-    Pick anchor tasks deterministically from a dataset's task list.
+    Pick `tool_count` distinct anchor tools and return ALL L1 tasks for them.
 
-    Strategy: walk the L1 tasks in load order and accept one task per
-    distinct required tool until we have `count` tasks. Restricting to
-    L1 keeps anchors single-tool and easy to reason about.
+    Strategy: walk the L1 tasks in load order, group by required tool,
+    and pick the first `tool_count` distinct tools encountered. Every L1
+    task belonging to one of those tools becomes an anchor. Restricting
+    to L1 keeps anchors single-tool and easy to reason about.
     """
-    seen_tools: set[str] = set()
-    anchors: list[dict] = []
+    by_tool: dict[str, list[dict]] = {}
+    anchor_tools_ordered: list[str] = []
     for t in tasks:
         if t.get("level") != "L1":
             continue
@@ -116,13 +117,12 @@ def _select_anchor_tasks(
         if len(required) != 1:
             continue
         tool = required[0]
-        if tool in seen_tools:
-            continue
-        seen_tools.add(tool)
-        anchors.append(t)
-        if len(anchors) >= count:
-            break
-    return anchors
+        if tool not in by_tool:
+            if len(anchor_tools_ordered) >= tool_count:
+                continue
+            anchor_tools_ordered.append(tool)
+        by_tool.setdefault(tool, []).append(t)
+    return [task for tool in anchor_tools_ordered for task in by_tool[tool]]
 
 
 def _anchor_tool_set(anchor_tasks: list[dict]) -> set[str]:
@@ -426,7 +426,7 @@ async def _sweep(
     allow_fallback: bool,
     output_path: Optional[Path],
     datasets: list[str],
-    anchors_per_dataset: int,
+    anchor_tools_per_dataset: int,
 ) -> dict:
     if seed is None:
         seed = random.randrange(2**31)
@@ -436,21 +436,32 @@ async def _sweep(
     if not cycle:
         raise SystemExit(f"No valid datasets selected. Pick from {DATASET_CYCLE}.")
 
-    # Load all L1/L2/L3 tasks per dataset and pick anchors
+    # Load all L1/L2/L3 tasks per dataset (plus optional L1 extras) and pick anchors
     per_dataset_tasks: dict[str, list[dict]] = {}
     per_dataset_tools: dict[str, list[str]] = {}
     anchor_tasks: dict[str, list[dict]] = {}
     anchor_tools: dict[str, set[str]] = {}
     for ds in cycle:
         tasks = load_tasks(ds, ["L1", "L2", "L3"], limit=None)
+        extra_path = Path(DATASETS[ds]["tasks"]["L1"]).parent / "tasks_l1_extra.jsonl"
+        if extra_path.exists():
+            with open(extra_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    extra = json.loads(line)
+                    extra.setdefault("level", "L1")
+                    tasks.append(extra)
         per_dataset_tasks[ds] = tasks
         per_dataset_tools[ds] = _extract_dataset_tools(tasks)
-        anchors = _select_anchor_tasks(tasks, anchors_per_dataset)
+        anchors = _select_anchor_tasks(tasks, anchor_tools_per_dataset)
         anchor_tasks[ds] = anchors
         anchor_tools[ds] = _anchor_tool_set(anchors)
         print(
             f"  {ds:10s} {len(tasks):3d} tasks / {len(per_dataset_tools[ds]):2d} tools "
-            f"| {len(anchors)} anchors → {sorted(anchor_tools[ds])}"
+            f"| {len(anchor_tools[ds])} anchor tools / {len(anchors)} anchor tasks "
+            f"→ {sorted(anchor_tools[ds])}"
         )
         if not anchors:
             print(f"    [warn] no L1 anchors available for {ds}, dataset will be skipped")
@@ -593,8 +604,9 @@ async def _sweep(
         "base_url": model_cfg.base_url,
         "seed": seed,
         "datasets": cycle,
-        "anchors_per_dataset": anchors_per_dataset,
-        "anchor_tools_per_dataset": {ds: sorted(anchor_tools[ds]) for ds in cycle},
+        "anchor_tools_per_dataset": anchor_tools_per_dataset,
+        "anchor_tools_by_dataset": {ds: sorted(anchor_tools[ds]) for ds in cycle},
+        "anchor_task_count_by_dataset": {ds: len(anchor_tasks[ds]) for ds in cycle},
         "anchor_task_ids_per_dataset": {
             ds: [t.get("id", "?") for t in anchor_tasks[ds]] for ds in cycle
         },
@@ -669,8 +681,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--datasets", nargs="+", default=DATASET_CYCLE,
                    choices=DATASET_CYCLE,
                    help=f"Datasets to include (default: {DATASET_CYCLE})")
-    p.add_argument("--anchors-per-dataset", type=int, default=5,
-                   help="Number of L1 anchor tasks per dataset (default: 5)")
+    p.add_argument("--anchor-tools-per-dataset", type=int, default=5,
+                   help=(
+                       "Number of distinct L1 anchor tools per dataset (default: 5). "
+                       "All L1 tasks belonging to those tools are used as anchors."
+                   ))
     p.add_argument("--allow-fallback", action="store_true")
     p.add_argument("--output", type=Path, default=None)
     return p
@@ -690,7 +705,7 @@ def main():
     print(f"  model    : {model_cfg.name}  [{model_cfg.backend}]")
     print(f"  endpoint : {model_cfg.base_url}")
     print(f"  datasets : {args.datasets}")
-    print(f"  anchors  : {args.anchors_per_dataset} per dataset")
+    print(f"  anchors  : {args.anchor_tools_per_dataset} tools per dataset (all L1 tasks per tool)")
     print(f"  seed     : {args.seed if args.seed is not None else '(random)'}")
     if args.from_step or args.to_step:
         print(f"  steps    : {args.from_step or 1}..{args.to_step or 'end'}")
@@ -704,7 +719,7 @@ def main():
         allow_fallback=args.allow_fallback,
         output_path=args.output,
         datasets=args.datasets,
-        anchors_per_dataset=args.anchors_per_dataset,
+        anchor_tools_per_dataset=args.anchor_tools_per_dataset,
     ))
 
     if not output:
