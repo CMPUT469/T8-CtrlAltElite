@@ -1,31 +1,28 @@
 """
-Anchor-task threshold sweep.
+Global growing-menu threshold sweep.
 
-Picks a fixed set of "anchor" L1 tasks per dataset, pre-exposes their
-required tools, then adds the remaining tools one-by-one across all
-datasets in a strict round-robin cycle (math -> stats -> finance -> sql
--> math -> ...) with each dataset's internal tool order randomly
-shuffled per run.
+Starts with **one tool exposed** and **only that tool's tasks in the pool**,
+then adds one more tool per step in strict round-robin order across datasets
+(bfcl -> jefferson -> finance -> postgres -> bfcl -> ...) with each dataset's
+internal tool order randomly shuffled per seed.
 
-At every step, the same anchor task set for the current dataset is
-re-evaluated against the new (larger) exposed tool list. Because the
-tasks are fixed, any change in WOS is attributable purely to the
-growing tool count — that is the threshold signal.
+When tool K is added at step K, its tasks join the pool and the **entire
+pool** is re-evaluated against the new K-tool menu. The task set is mixed
+across datasets — one unified evaluation per step, no per-dataset isolation.
 
-Output: per-dataset baseline WOS (anchors only) and a step-by-step
-WOS curve. The threshold is the step where WOS systematically drops
-from baseline.
+This measures a real degradation curve: the same tasks that succeeded at
+step 5 may fail at step 40 because the menu got crowded.
 
 Usage
 -----
-# Random shuffle each run, default 5 anchor tools per dataset
+# Default: 5 tasks per tool, all 4 datasets, round-robin tool addition
 python -m harness.random_sweep --model qwen2.5:7b
 
-# Reproducible
+# Reproducible with a fixed seed
 python -m harness.random_sweep --model qwen2.5:7b --seed 42
 
-# More anchor tools for a tighter signal (each tool brings all its L1 tasks)
-python -m harness.random_sweep --model qwen2.5:7b --anchor-tools-per-dataset 10
+# Smaller/larger sample
+python -m harness.random_sweep --model qwen2.5:7b --tasks-per-tool 3
 
 # Resume / partial
 python -m harness.random_sweep --model qwen2.5:7b --seed 42 --from-step 20 --to-step 40
@@ -96,62 +93,75 @@ def _task_required_tools(task: dict) -> list[str]:
     return []
 
 
-def _select_anchor_tasks(
-    tasks: list[dict],
-    tool_count: int,
-) -> list[dict]:
-    """
-    Pick `tool_count` distinct anchor tools and return ALL L1 tasks for them.
+def _load_dataset_l1_tasks(ds: str) -> list[dict]:
+    """Load L1 tasks for one dataset: base file plus optional `tasks_l1_extra.jsonl`."""
+    tasks = load_tasks(ds, ["L1"], limit=None)
+    extra_path = Path(DATASETS[ds]["tasks"]["L1"]).parent / "tasks_l1_extra.jsonl"
+    if extra_path.exists():
+        with open(extra_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                extra = json.loads(line)
+                extra.setdefault("level", "L1")
+                tasks.append(extra)
+    return tasks
 
-    Strategy: walk the L1 tasks in load order, group by required tool,
-    and pick the first `tool_count` distinct tools encountered. Every L1
-    task belonging to one of those tools becomes an anchor. Restricting
-    to L1 keeps anchors single-tool and easy to reason about.
+
+def _collect_l1_by_tool(
+    cycle: list[str],
+    rng: random.Random,
+    tasks_per_tool: int,
+) -> tuple[dict[tuple[str, str], list[dict]], dict[str, list[str]]]:
     """
-    by_tool: dict[str, list[dict]] = {}
-    anchor_tools_ordered: list[str] = []
-    for t in tasks:
-        if t.get("level") != "L1":
-            continue
-        required = _task_required_tools(t)
-        if len(required) != 1:
-            continue
-        tool = required[0]
-        if tool not in by_tool:
-            if len(anchor_tools_ordered) >= tool_count:
+    For every dataset in `cycle`, load L1 tasks, group by (dataset, tool),
+    seeded-subsample to `tasks_per_tool` per tool, and tag each task with
+    its `_dataset`.
+
+    Returns:
+        by_tool : {(dataset, tool_name): [task, ...]}
+        per_dataset_tools : {dataset: sorted list of tool names}
+    """
+    by_tool: dict[tuple[str, str], list[dict]] = {}
+    per_dataset_tools: dict[str, list[str]] = {}
+
+    for ds in cycle:
+        tasks = _load_dataset_l1_tasks(ds)
+        per_dataset_tools[ds] = _extract_dataset_tools(tasks)
+
+        grouped: dict[str, list[dict]] = {}
+        for t in tasks:
+            required = _task_required_tools(t)
+            if len(required) != 1:
                 continue
-            anchor_tools_ordered.append(tool)
-        by_tool.setdefault(tool, []).append(t)
-    return [task for tool in anchor_tools_ordered for task in by_tool[tool]]
+            grouped.setdefault(required[0], []).append(t)
 
+        for tool_name, tlist in grouped.items():
+            if len(tlist) > tasks_per_tool:
+                sampled = rng.sample(tlist, tasks_per_tool)
+            else:
+                sampled = list(tlist)
+            for t in sampled:
+                t["_dataset"] = ds
+            by_tool[(ds, tool_name)] = sampled
 
-def _anchor_tool_set(anchor_tasks: list[dict]) -> set[str]:
-    """Union of required tools across all anchor tasks."""
-    tools: set[str] = set()
-    for t in anchor_tasks:
-        for fn in _task_required_tools(t):
-            tools.add(fn)
-    return tools
+    return by_tool, per_dataset_tools
 
 
 def _build_round_robin_schedule(
     per_dataset_tools: dict[str, list[str]],
-    excluded_tools: dict[str, set[str]],
     rng: random.Random,
     cycle: list[str],
 ) -> list[tuple[str, str]]:
     """
-    Shuffle each dataset's non-excluded tools and interleave the shuffles
-    in `cycle` order. When a dataset exhausts its remaining tools it is
-    skipped; the cycle continues with the remaining datasets.
-
-    `excluded_tools[ds]` is the set of tools to omit from the schedule
-    (typically the anchor tools, which are pre-exposed).
+    Shuffle each dataset's tool list and interleave in `cycle` order. When a
+    dataset exhausts its tools it is skipped; the cycle continues with the
+    rest.
     """
     queues: dict[str, list[str]] = {}
     for ds in cycle:
-        excluded = excluded_tools.get(ds, set())
-        tools = [t for t in per_dataset_tools.get(ds, []) if t not in excluded]
+        tools = list(per_dataset_tools.get(ds, []))
         rng.shuffle(tools)
         queues[ds] = tools
 
@@ -164,7 +174,7 @@ def _build_round_robin_schedule(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Per-task evaluation (whitelist-based, adapted from runner.run_evaluation)
+# Per-task evaluation
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _build_system_prompt(dataset: str, allow_fallback: bool) -> str:
@@ -191,22 +201,19 @@ def _build_system_prompt(dataset: str, allow_fallback: bool) -> str:
     return sys_content
 
 
-async def _evaluate_tasks(
-    tasks: list[dict],
+async def _evaluate_pool(
+    pool: list[dict],
     session,
     client: ModelClient,
     exposed_tools: list[dict],
-    dataset: str,
     allow_fallback: bool,
 ) -> tuple[list[dict], dict]:
     """
-    Evaluate a list of tasks against a fixed `exposed_tools` whitelist.
-    Returns (details, totals) ready to feed into calculate_metrics().
+    Evaluate a mixed-dataset task pool against one shared exposed tool list.
+    Each task's system prompt is built from its own `_dataset` tag.
     """
-    strict_tool_param_checks = dataset in {"finance", "finance-v2"}
-
     totals = dict(
-        total_tests=len(tasks),
+        total_tests=len(pool),
         correct_result=0,
         no_tool_call=0,
         wrong_tool=0,
@@ -214,21 +221,22 @@ async def _evaluate_tasks(
     )
     details: list[dict] = []
 
-    sys_prompt = _build_system_prompt(dataset, allow_fallback)
-
-    for i, task in enumerate(tasks, 1):
+    for i, task in enumerate(pool, 1):
         task_id = task.get("id", f"task_{i}")
         query = task["query"]
         level = task.get("level", "L1")
         expected_params = task.get("expected_params")
+        dataset = task.get("_dataset", "unknown")
 
         ref_functions = task.get("functions") or (
             [task["function"]] if "function" in task else []
         )
         optimal_steps = len(ref_functions) if ref_functions else 1
+        strict_tool_param_checks = dataset in {"finance", "finance-v2"}
 
         record: dict = {
             "task_id": task_id,
+            "dataset": dataset,
             "level": level,
             "query": query,
             "ref_functions": ref_functions,
@@ -250,6 +258,7 @@ async def _evaluate_tasks(
             "expected_outcome": None,
         }
 
+        sys_prompt = _build_system_prompt(dataset, allow_fallback)
         messages = [
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": query},
@@ -406,7 +415,7 @@ async def _evaluate_tasks(
         actual_path = "→".join(record["actual_functions"]) or "none"
         ref_path = "→".join(ref_functions) or "?"
         print(
-            f"    {status} {level} {task_id}: actual={actual_path} | "
+            f"    {status} {dataset:9s} {task_id}: actual={actual_path} | "
             f"ref={ref_path} | steps={record['actual_steps']}/{record['optimal_steps']} | "
             f"wos={wos_val:.2f}"
         )
@@ -426,7 +435,7 @@ async def _sweep(
     allow_fallback: bool,
     output_path: Optional[Path],
     datasets: list[str],
-    anchor_tools_per_dataset: int,
+    tasks_per_tool: int,
 ) -> dict:
     if seed is None:
         seed = random.randrange(2**31)
@@ -436,167 +445,102 @@ async def _sweep(
     if not cycle:
         raise SystemExit(f"No valid datasets selected. Pick from {DATASET_CYCLE}.")
 
-    # Load all L1/L2/L3 tasks per dataset (plus optional L1 extras) and pick anchors
-    per_dataset_tasks: dict[str, list[dict]] = {}
-    per_dataset_tools: dict[str, list[str]] = {}
-    anchor_tasks: dict[str, list[dict]] = {}
-    anchor_tools: dict[str, set[str]] = {}
+    by_tool, per_dataset_tools = _collect_l1_by_tool(cycle, rng, tasks_per_tool)
+
     for ds in cycle:
-        tasks = load_tasks(ds, ["L1", "L2", "L3"], limit=None)
-        extra_path = Path(DATASETS[ds]["tasks"]["L1"]).parent / "tasks_l1_extra.jsonl"
-        if extra_path.exists():
-            with open(extra_path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    extra = json.loads(line)
-                    extra.setdefault("level", "L1")
-                    tasks.append(extra)
-        per_dataset_tasks[ds] = tasks
-        per_dataset_tools[ds] = _extract_dataset_tools(tasks)
-        anchors = _select_anchor_tasks(tasks, anchor_tools_per_dataset)
-        anchor_tasks[ds] = anchors
-        anchor_tools[ds] = _anchor_tool_set(anchors)
-        print(
-            f"  {ds:10s} {len(tasks):3d} tasks / {len(per_dataset_tools[ds]):2d} tools "
-            f"| {len(anchor_tools[ds])} anchor tools / {len(anchors)} anchor tasks "
-            f"→ {sorted(anchor_tools[ds])}"
+        ds_tools = per_dataset_tools[ds]
+        ds_task_count = sum(
+            len(by_tool.get((ds, tool), [])) for tool in ds_tools
         )
-        if not anchors:
-            print(f"    [warn] no L1 anchors available for {ds}, dataset will be skipped")
+        print(
+            f"  {ds:10s} {len(ds_tools):2d} tools / {ds_task_count:3d} sampled L1 tasks "
+            f"({tasks_per_tool}/tool)"
+        )
 
-    cycle = [ds for ds in cycle if anchor_tasks[ds]]
-    if not cycle:
-        raise SystemExit("No datasets with usable anchors. Aborting.")
-
-    schedule = _build_round_robin_schedule(
-        per_dataset_tools, anchor_tools, rng, cycle,
-    )
+    schedule = _build_round_robin_schedule(per_dataset_tools, rng, cycle)
     total_steps = len(schedule)
 
     print(f"\nSeed: {seed}")
-    print(f"Sweep steps (non-anchor tools): {total_steps}")
+    print(f"Sweep steps (total tools to add): {total_steps}")
     for ds in cycle:
         order = [t for d, t in schedule if d == ds]
-        print(f"  {ds:10s} sweep order: {order}")
+        print(f"  {ds:10s} tool order: {order}")
     print()
 
     client = ModelClient(model_cfg, allow_fallback=allow_fallback)
 
-    # Each dataset starts with its anchor tools already exposed
-    exposed_per_ds: dict[str, set[str]] = {ds: set(anchor_tools[ds]) for ds in cycle}
+    exposed: set[str] = set()
+    pool: list[dict] = []
     step_records: list[dict] = []
-    baseline_metrics: dict[str, dict] = {}
 
     async with AsyncExitStack() as stack:
-        sessions: dict[str, tuple] = {}
-        for ds in cycle:
-            server_script = Path(DATASETS[ds]["server"])
-            sess, all_tools = await stack.enter_async_context(mcp_session(server_script))
-            sessions[ds] = (sess, all_tools)
-            print(f"  MCP session up for {ds} ({len(all_tools)} tools available)")
-        print()
+        server_script = Path(DATASETS[cycle[0]]["server"])
+        session, all_tools = await stack.enter_async_context(mcp_session(server_script))
+        print(f"  MCP session up ({len(all_tools)} tools available across all datasets)\n")
 
-        # ── Baseline: anchors only ────────────────────────────────────
-        skip_baseline = bool(from_step and from_step > 1)
-        if not skip_baseline:
-            print("[Baseline] anchors only (no extra tools exposed)")
-            for ds in cycle:
-                session, all_tools = sessions[ds]
-                exposed_tools = [
-                    t for t in all_tools if t["function"]["name"] in exposed_per_ds[ds]
-                ]
-                print(
-                    f"  {ds}: {len(anchor_tasks[ds])} anchors, "
-                    f"{len(exposed_tools)} tools exposed"
-                )
-                t0 = time.perf_counter()
-                details, totals = await _evaluate_tasks(
-                    anchor_tasks[ds], session, client, exposed_tools, ds, allow_fallback,
-                )
-                elapsed = time.perf_counter() - t0
-                metrics = calculate_metrics(details, totals)
-                baseline_metrics[ds] = {
-                    "metrics": metrics,
-                    "details": details,
-                    "exposed_tools": sorted(exposed_per_ds[ds]),
-                }
-                print(
-                    f"    baseline {ds}: WOS={metrics['wos']}% "
-                    f"({elapsed:.1f}s)\n"
-                )
-
-        # ── Sweep: add one non-anchor tool, re-eval anchors ───────────
         for step_num, (ds, new_tool) in enumerate(schedule, start=1):
-            exposed_per_ds[ds].add(new_tool)
+            exposed.add(new_tool)
+            pool.extend(by_tool.get((ds, new_tool), []))
 
             if from_step and step_num < from_step:
                 continue
             if to_step and step_num > to_step:
                 break
 
-            session, all_tools = sessions[ds]
-            exposed_set = exposed_per_ds[ds]
             exposed_tools = [
-                t for t in all_tools if t["function"]["name"] in exposed_set
+                t for t in all_tools if t["function"]["name"] in exposed
             ]
 
             print(
                 f"[Step {step_num}/{total_steps}] {ds} ← {new_tool}  "
-                f"|  exposed: {len(exposed_set)} {ds} tools  "
-                f"|  re-eval {len(anchor_tasks[ds])} anchors"
+                f"|  menu: {len(exposed_tools)} tools  "
+                f"|  pool: {len(pool)} tasks"
             )
 
             t0 = time.perf_counter()
-            details, totals = await _evaluate_tasks(
-                anchor_tasks[ds], session, client, exposed_tools, ds, allow_fallback,
+            details, totals = await _evaluate_pool(
+                pool, session, client, exposed_tools, allow_fallback,
             )
             elapsed = time.perf_counter() - t0
             metrics = calculate_metrics(details, totals)
-
-            baseline_wos = (
-                baseline_metrics.get(ds, {}).get("metrics", {}).get("wos")
-                if baseline_metrics.get(ds) else None
-            )
-            delta_str = (
-                f"  Δ={metrics['wos'] - baseline_wos:+.2f}pp"
-                if baseline_wos is not None else ""
-            )
             print(
-                f"    anchor WOS={metrics['wos']}%{delta_str}  ({elapsed:.1f}s)\n"
+                f"    WOS={metrics['wos']}%  "
+                f"correct={totals['correct_result']}/{totals['total_tests']}  "
+                f"({elapsed:.1f}s)\n"
             )
 
             step_records.append({
                 "step": step_num,
                 "dataset": ds,
                 "tool_added": new_tool,
-                "exposed_tools_in_dataset": sorted(exposed_set),
-                "anchor_count": len(anchor_tasks[ds]),
+                "exposed_tools": sorted(exposed),
+                "exposed_count": len(exposed),
+                "pool_size": len(pool),
                 "metrics": metrics,
+                "totals": totals,
                 "details": details,
             })
 
-    # Build per-dataset WOS curves: baseline + each step that touched ds
-    wos_curves: dict[str, list[dict]] = {}
-    for ds in cycle:
-        curve: list[dict] = []
-        if ds in baseline_metrics:
-            curve.append({
-                "step": 0,
-                "tool_added": None,
-                "wos": baseline_metrics[ds]["metrics"]["wos"],
-                "exposed_count": len(baseline_metrics[ds]["exposed_tools"]),
-            })
-        for rec in step_records:
-            if rec["dataset"] == ds:
-                curve.append({
-                    "step": rec["step"],
-                    "tool_added": rec["tool_added"],
-                    "wos": rec["metrics"]["wos"],
-                    "exposed_count": len(rec["exposed_tools_in_dataset"]),
-                })
-        wos_curves[ds] = curve
+    wos_curve = [
+        {
+            "step": rec["step"],
+            "dataset": rec["dataset"],
+            "tool_added": rec["tool_added"],
+            "exposed_count": rec["exposed_count"],
+            "pool_size": rec["pool_size"],
+            "wos": rec["metrics"]["wos"],
+            "correct": rec["totals"]["correct_result"],
+            "wrong_tool": rec["totals"]["wrong_tool"],
+            "wrong_params": rec["totals"]["wrong_params"],
+            "no_tool_call": rec["totals"]["no_tool_call"],
+        }
+        for rec in step_records
+    ]
+
+    tasks_by_tool_ids = {
+        f"{ds}:{tool}": [t.get("id", "?") for t in tlist]
+        for (ds, tool), tlist in by_tool.items()
+    }
 
     output = {
         "model": model_cfg.name,
@@ -604,12 +548,7 @@ async def _sweep(
         "base_url": model_cfg.base_url,
         "seed": seed,
         "datasets": cycle,
-        "anchor_tools_per_dataset": anchor_tools_per_dataset,
-        "anchor_tools_by_dataset": {ds: sorted(anchor_tools[ds]) for ds in cycle},
-        "anchor_task_count_by_dataset": {ds: len(anchor_tasks[ds]) for ds in cycle},
-        "anchor_task_ids_per_dataset": {
-            ds: [t.get("id", "?") for t in anchor_tasks[ds]] for ds in cycle
-        },
+        "tasks_per_tool": tasks_per_tool,
         "from_step": from_step,
         "to_step": to_step,
         "tool_order_per_dataset": {
@@ -620,10 +559,10 @@ async def _sweep(
             for i, (d, t) in enumerate(schedule)
         ],
         "total_steps": total_steps,
+        "tasks_by_tool": tasks_by_tool_ids,
         "timestamp": datetime.now().isoformat(),
-        "baseline_metrics": baseline_metrics,
         "steps": step_records,
-        "wos_curves": wos_curves,
+        "wos_curve": wos_curve,
     }
 
     save_path = output_path or _default_output_path(model_cfg.name, seed)
@@ -632,19 +571,15 @@ async def _sweep(
         json.dump(output, f, indent=2)
     print(f"Results saved -> {save_path}")
 
-    # Print compact threshold curves
     print("\n" + "=" * 62)
-    print("  WOS curves (anchor tasks)")
+    print("  Global WOS curve")
     print("=" * 62)
-    for ds in cycle:
-        print(f"\n  {ds}:")
-        for pt in wos_curves[ds]:
-            label = "baseline" if pt["step"] == 0 else f"step {pt['step']:3d}"
-            tool = f"+{pt['tool_added']}" if pt["tool_added"] else "(anchors only)"
-            print(
-                f"    {label} | {pt['exposed_count']:2d} tools | "
-                f"WOS={pt['wos']:6.2f}% | {tool}"
-            )
+    for pt in wos_curve:
+        print(
+            f"  step {pt['step']:3d} | {pt['dataset']:9s} +{pt['tool_added']:35s} "
+            f"| {pt['exposed_count']:2d} tools | {pt['pool_size']:4d} tasks | "
+            f"WOS={pt['wos']:6.2f}%"
+        )
     print()
 
     return output
@@ -662,7 +597,7 @@ def _default_output_path(model_name: str, seed: int) -> Path:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Anchor-task threshold sweep with round-robin random tool addition.",
+        description="Global growing-menu threshold sweep.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -681,11 +616,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--datasets", nargs="+", default=DATASET_CYCLE,
                    choices=DATASET_CYCLE,
                    help=f"Datasets to include (default: {DATASET_CYCLE})")
-    p.add_argument("--anchor-tools-per-dataset", type=int, default=5,
-                   help=(
-                       "Number of distinct L1 anchor tools per dataset (default: 5). "
-                       "All L1 tasks belonging to those tools are used as anchors."
-                   ))
+    p.add_argument("--tasks-per-tool", type=int, default=5,
+                   help="How many L1 tasks to sample per tool (default: 5)")
     p.add_argument("--allow-fallback", action="store_true")
     p.add_argument("--output", type=Path, default=None)
     return p
@@ -701,14 +633,14 @@ def main():
     )
 
     print("=" * 62)
-    print(f"  anchor-task threshold sweep")
-    print(f"  model    : {model_cfg.name}  [{model_cfg.backend}]")
-    print(f"  endpoint : {model_cfg.base_url}")
-    print(f"  datasets : {args.datasets}")
-    print(f"  anchors  : {args.anchor_tools_per_dataset} tools per dataset (all L1 tasks per tool)")
-    print(f"  seed     : {args.seed if args.seed is not None else '(random)'}")
+    print(f"  global growing-menu threshold sweep")
+    print(f"  model         : {model_cfg.name}  [{model_cfg.backend}]")
+    print(f"  endpoint      : {model_cfg.base_url}")
+    print(f"  datasets      : {args.datasets}")
+    print(f"  tasks/tool    : {args.tasks_per_tool}")
+    print(f"  seed          : {args.seed if args.seed is not None else '(random)'}")
     if args.from_step or args.to_step:
-        print(f"  steps    : {args.from_step or 1}..{args.to_step or 'end'}")
+        print(f"  steps         : {args.from_step or 1}..{args.to_step or 'end'}")
     print("=" * 62)
 
     output = asyncio.run(_sweep(
@@ -719,7 +651,7 @@ def main():
         allow_fallback=args.allow_fallback,
         output_path=args.output,
         datasets=args.datasets,
-        anchor_tools_per_dataset=args.anchor_tools_per_dataset,
+        tasks_per_tool=args.tasks_per_tool,
     ))
 
     if not output:
