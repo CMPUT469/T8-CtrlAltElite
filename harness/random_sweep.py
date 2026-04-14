@@ -1,21 +1,27 @@
 """
-Global growing-menu threshold sweep.
+Bundled global growing-menu threshold sweep.
 
-Starts with **one tool exposed** and **only that tool's tasks in the pool**,
-then adds one more tool per step in strict round-robin order across datasets
-(bfcl -> jefferson -> finance -> postgres -> bfcl -> ...) with each dataset's
-internal tool order randomly shuffled per seed.
+Starts with an empty menu and an empty task pool. At each **bundled step**,
+adds up to 4 tools simultaneously — one from each dataset when possible
+(bfcl, jefferson, finance, postgres). Their sampled tasks all join the pool
+in the same step, and the entire pool is re-evaluated against the new menu.
 
-When tool K is added at step K, its tasks join the pool and the **entire
-pool** is re-evaluated against the new K-tool menu. The task set is mixed
-across datasets — one unified evaluation per step, no per-dataset isolation.
+Runout rule: when a dataset exhausts its tools (postgres first), the empty
+slot is refilled from the dataset with the most tools still remaining, so
+every step keeps adding 4 tools until the absolute end of the schedule.
 
-This measures a real degradation curve: the same tasks that succeeded at
-step 5 may fail at step 40 because the menu got crowded.
+With 54 tools total and bundle_size=4, a full sweep is 14 bundled steps
+(the last step adds the leftover 2 tools). At --tasks-per-tool 5 that's
+~2,090 model calls and ~2.3h wall time.
+
+Each task stays in the pool after it's added, so the same task is re-run
+at every subsequent bundled step. That produces a real degradation curve:
+a task that succeeds with a 4-tool menu at step 1 may start failing at
+step 10 (40 tools) because the model's tool-selection gets overwhelmed.
 
 Usage
 -----
-# Default: 5 tasks per tool, all 4 datasets, round-robin tool addition
+# Default: 5 tasks per tool, all 4 datasets, bundled 4-tools-per-step
 python -m harness.random_sweep --model qwen2.5:7b
 
 # Reproducible with a fixed seed
@@ -24,8 +30,8 @@ python -m harness.random_sweep --model qwen2.5:7b --seed 42
 # Smaller/larger sample
 python -m harness.random_sweep --model qwen2.5:7b --tasks-per-tool 3
 
-# Resume / partial
-python -m harness.random_sweep --model qwen2.5:7b --seed 42 --from-step 20 --to-step 40
+# Resume / partial (step numbers refer to bundled steps)
+python -m harness.random_sweep --model qwen2.5:7b --seed 42 --from-step 5 --to-step 10
 
 # Subset of datasets
 python -m harness.random_sweep --model qwen2.5:7b --datasets bfcl jefferson
@@ -149,15 +155,22 @@ def _collect_l1_by_tool(
     return by_tool, per_dataset_tools
 
 
-def _build_round_robin_schedule(
+def _build_bundled_schedule(
     per_dataset_tools: dict[str, list[str]],
     rng: random.Random,
     cycle: list[str],
-) -> list[tuple[str, str]]:
+    bundle_size: int = 4,
+) -> list[list[tuple[str, str]]]:
     """
-    Shuffle each dataset's tool list and interleave in `cycle` order. When a
-    dataset exhausts its tools it is skipped; the cycle continues with the
-    rest.
+    Return a list of bundled steps. Each bundle is up to `bundle_size`
+    (dataset, tool) pairs — preferentially one per dataset in `cycle`
+    order. When a dataset's queue is empty, the empty slot is filled
+    from whichever remaining dataset has the largest queue at that
+    moment, so every step keeps adding `bundle_size` tools until the
+    last step (which may add fewer if the total is not a multiple).
+
+    Per-dataset queues are shuffled once up front, so within-dataset
+    order is deterministic under `rng`.
     """
     queues: dict[str, list[str]] = {}
     for ds in cycle:
@@ -165,11 +178,21 @@ def _build_round_robin_schedule(
         rng.shuffle(tools)
         queues[ds] = tools
 
-    schedule: list[tuple[str, str]] = []
+    schedule: list[list[tuple[str, str]]] = []
     while any(queues[ds] for ds in cycle):
+        bundle: list[tuple[str, str]] = []
         for ds in cycle:
             if queues[ds]:
-                schedule.append((ds, queues[ds].pop(0)))
+                bundle.append((ds, queues[ds].pop(0)))
+                if len(bundle) == bundle_size:
+                    break
+        while len(bundle) < bundle_size:
+            candidates = [ds for ds in cycle if queues[ds]]
+            if not candidates:
+                break
+            donor = max(candidates, key=lambda ds: len(queues[ds]))
+            bundle.append((donor, queues[donor].pop(0)))
+        schedule.append(bundle)
     return schedule
 
 
@@ -457,13 +480,17 @@ async def _sweep(
             f"({tasks_per_tool}/tool)"
         )
 
-    schedule = _build_round_robin_schedule(per_dataset_tools, rng, cycle)
+    schedule = _build_bundled_schedule(per_dataset_tools, rng, cycle)
     total_steps = len(schedule)
+    total_tools_scheduled = sum(len(bundle) for bundle in schedule)
 
     print(f"\nSeed: {seed}")
-    print(f"Sweep steps (total tools to add): {total_steps}")
+    print(
+        f"Bundled steps: {total_steps}  "
+        f"(each adds up to 4 tools; {total_tools_scheduled} tools total)"
+    )
     for ds in cycle:
-        order = [t for d, t in schedule if d == ds]
+        order = [t for bundle in schedule for d, t in bundle if d == ds]
         print(f"  {ds:10s} tool order: {order}")
     print()
 
@@ -478,9 +505,10 @@ async def _sweep(
         session, all_tools = await stack.enter_async_context(mcp_session(server_script))
         print(f"  MCP session up ({len(all_tools)} tools available across all datasets)\n")
 
-        for step_num, (ds, new_tool) in enumerate(schedule, start=1):
-            exposed.add(new_tool)
-            pool.extend(by_tool.get((ds, new_tool), []))
+        for step_num, bundle in enumerate(schedule, start=1):
+            for ds, new_tool in bundle:
+                exposed.add(new_tool)
+                pool.extend(by_tool.get((ds, new_tool), []))
 
             if from_step and step_num < from_step:
                 continue
@@ -491,10 +519,11 @@ async def _sweep(
                 t for t in all_tools if t["function"]["name"] in exposed
             ]
 
+            bundle_str = ", ".join(f"{ds}:{tool}" for ds, tool in bundle)
             print(
-                f"[Step {step_num}/{total_steps}] {ds} ← {new_tool}  "
-                f"|  menu: {len(exposed_tools)} tools  "
-                f"|  pool: {len(pool)} tasks"
+                f"[Step {step_num}/{total_steps}] +{len(bundle)} tools ← {bundle_str}  "
+                f"|  menu: {len(exposed_tools)}  "
+                f"|  pool: {len(pool)}"
             )
 
             t0 = time.perf_counter()
@@ -511,8 +540,9 @@ async def _sweep(
 
             step_records.append({
                 "step": step_num,
-                "dataset": ds,
-                "tool_added": new_tool,
+                "tools_added": [
+                    {"dataset": ds, "tool": tool} for ds, tool in bundle
+                ],
                 "exposed_tools": sorted(exposed),
                 "exposed_count": len(exposed),
                 "pool_size": len(pool),
@@ -524,8 +554,7 @@ async def _sweep(
     wos_curve = [
         {
             "step": rec["step"],
-            "dataset": rec["dataset"],
-            "tool_added": rec["tool_added"],
+            "tools_added": rec["tools_added"],
             "exposed_count": rec["exposed_count"],
             "pool_size": rec["pool_size"],
             "wos": rec["metrics"]["wos"],
@@ -552,13 +581,18 @@ async def _sweep(
         "from_step": from_step,
         "to_step": to_step,
         "tool_order_per_dataset": {
-            ds: [t for d, t in schedule if d == ds] for ds in cycle
+            ds: [t for bundle in schedule for d, t in bundle if d == ds]
+            for ds in cycle
         },
         "schedule": [
-            {"step": i + 1, "dataset": d, "tool": t}
-            for i, (d, t) in enumerate(schedule)
+            {
+                "step": i + 1,
+                "tools": [{"dataset": d, "tool": t} for d, t in bundle],
+            }
+            for i, bundle in enumerate(schedule)
         ],
         "total_steps": total_steps,
+        "total_tools_scheduled": total_tools_scheduled,
         "tasks_by_tool": tasks_by_tool_ids,
         "timestamp": datetime.now().isoformat(),
         "steps": step_records,
@@ -571,14 +605,15 @@ async def _sweep(
         json.dump(output, f, indent=2)
     print(f"Results saved -> {save_path}")
 
-    print("\n" + "=" * 62)
-    print("  Global WOS curve")
-    print("=" * 62)
+    print("\n" + "=" * 72)
+    print("  Bundled WOS curve")
+    print("=" * 72)
     for pt in wos_curve:
+        tools = ", ".join(f"{x['dataset']}:{x['tool']}" for x in pt["tools_added"])
         print(
-            f"  step {pt['step']:3d} | {pt['dataset']:9s} +{pt['tool_added']:35s} "
+            f"  step {pt['step']:2d} | +{len(pt['tools_added'])} "
             f"| {pt['exposed_count']:2d} tools | {pt['pool_size']:4d} tasks | "
-            f"WOS={pt['wos']:6.2f}%"
+            f"WOS={pt['wos']:6.2f}% | {tools}"
         )
     print()
 
