@@ -498,13 +498,12 @@ def _finance_id(n: int) -> str:
     return f"finance_{n:03d}"
 
 
-TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AMD", "INTC", "NFLX"]
+TICKERS = ["AAPL", "MSFT", "TSLA", "NVDA"]
 PERIODS = ["annual", "quarterly"]
 FILING_TYPES = ["10-K", "10-Q", "8-K"]
 COMPANY_NAMES = {
-    "AAPL": "Apple", "MSFT": "Microsoft", "GOOGL": "Alphabet",
-    "AMZN": "Amazon", "META": "Meta", "NVDA": "Nvidia",
-    "TSLA": "Tesla", "AMD": "AMD", "INTC": "Intel", "NFLX": "Netflix",
+    "AAPL": "Apple", "MSFT": "Microsoft",
+    "TSLA": "Tesla", "NVDA": "Nvidia",
 }
 
 
