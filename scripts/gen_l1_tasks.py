@@ -506,6 +506,8 @@ COMPANY_NAMES = {
     "TSLA": "Tesla", "NVDA": "Nvidia",
 }
 
+CRYPTO_TICKERS = ["BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD"]
+
 
 def gen_finance(rng: random.Random) -> list[dict]:
     tasks: list[dict] = []
@@ -635,6 +637,59 @@ def gen_finance(rng: random.Random) -> list[dict]:
         emit("getCompanyFacts",
              f"Retrieve company facts for {COMPANY_NAMES[ticker]}.",
              {"ticker": ticker})
+
+    # get_available_crypto_tickers — parameter-free
+    crypto_list_phrasings = [
+        "List all available crypto tickers.",
+        "Which crypto currencies are supported?",
+        "Show me the crypto tickers I can query.",
+        "Give me the full list of tradeable crypto symbols.",
+    ]
+    for _ in range(TARGET_PER_TOOL):
+        emit("get_available_crypto_tickers",
+             rng.choice(crypto_list_phrasings),
+             {})
+
+    # get_current_crypto_price
+    for _ in range(TARGET_PER_TOOL):
+        ticker = rng.choice(CRYPTO_TICKERS)
+        emit("get_current_crypto_price",
+             f"What is the current price of {ticker}?",
+             {"ticker": ticker})
+
+    # get_crypto_prices (historical range)
+    for _ in range(TARGET_PER_TOOL):
+        ticker = rng.choice(CRYPTO_TICKERS)
+        year = rng.randint(2023, 2025)
+        start_month = rng.randint(1, 9)
+        end_month = start_month + rng.randint(1, 3)
+        start_date = f"{year}-{start_month:02d}-01"
+        end_date = f"{year}-{end_month:02d}-28"
+        interval = rng.choice(["day", "week"])
+        emit("get_crypto_prices",
+             f"Fetch {interval}ly crypto prices for {ticker} from {start_date} to {end_date}.",
+             {"ticker": ticker,
+              "start_date": start_date,
+              "end_date": end_date,
+              "interval": interval,
+              "interval_multiplier": 1})
+
+    # get_historical_crypto_prices — same signature, different phrasing
+    for _ in range(TARGET_PER_TOOL):
+        ticker = rng.choice(CRYPTO_TICKERS)
+        year = rng.randint(2023, 2025)
+        start_month = rng.randint(1, 9)
+        end_month = start_month + rng.randint(1, 3)
+        start_date = f"{year}-{start_month:02d}-01"
+        end_date = f"{year}-{end_month:02d}-28"
+        interval = rng.choice(["day", "week"])
+        emit("get_historical_crypto_prices",
+             f"Retrieve historical {interval}ly crypto price data for {ticker} between {start_date} and {end_date}.",
+             {"ticker": ticker,
+              "start_date": start_date,
+              "end_date": end_date,
+              "interval": interval,
+              "interval_multiplier": 1})
 
     return tasks
 
