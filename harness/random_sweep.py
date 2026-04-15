@@ -500,6 +500,68 @@ async def _sweep(
     pool: list[dict] = []
     step_records: list[dict] = []
 
+    tasks_by_tool_ids = {
+        f"{ds}:{tool}": [t.get("id", "?") for t in tlist]
+        for (ds, tool), tlist in by_tool.items()
+    }
+
+    save_path = output_path or _default_output_path(model_cfg.name, seed)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"  Checkpoint file: {save_path}\n")
+
+    def _build_output() -> dict:
+        wos_curve = [
+            {
+                "step": rec["step"],
+                "tools_added": rec["tools_added"],
+                "exposed_count": rec["exposed_count"],
+                "pool_size": rec["pool_size"],
+                "wos": rec["metrics"]["wos"],
+                "correct": rec["totals"]["correct_result"],
+                "wrong_tool": rec["totals"]["wrong_tool"],
+                "wrong_params": rec["totals"]["wrong_params"],
+                "no_tool_call": rec["totals"]["no_tool_call"],
+            }
+            for rec in step_records
+        ]
+        return {
+            "model": model_cfg.name,
+            "backend": model_cfg.backend,
+            "base_url": model_cfg.base_url,
+            "seed": seed,
+            "datasets": cycle,
+            "tasks_per_tool": tasks_per_tool,
+            "from_step": from_step,
+            "to_step": to_step,
+            "tool_order_per_dataset": {
+                ds: [t for bundle in schedule for d, t in bundle if d == ds]
+                for ds in cycle
+            },
+            "schedule": [
+                {
+                    "step": i + 1,
+                    "tools": [{"dataset": d, "tool": t} for d, t in bundle],
+                }
+                for i, bundle in enumerate(schedule)
+            ],
+            "total_steps": total_steps,
+            "total_tools_scheduled": total_tools_scheduled,
+            "tasks_by_tool": tasks_by_tool_ids,
+            "timestamp": datetime.now().isoformat(),
+            "completed_steps": len(step_records),
+            "steps": step_records,
+            "wos_curve": wos_curve,
+        }
+
+    def _checkpoint() -> dict:
+        """Atomically write the current output to disk after each step."""
+        output = _build_output()
+        tmp_path = save_path.with_suffix(save_path.suffix + ".tmp")
+        with open(tmp_path, "w") as f:
+            json.dump(output, f, indent=2)
+        tmp_path.replace(save_path)
+        return output
+
     async with AsyncExitStack() as stack:
         server_script = Path(DATASETS[cycle[0]]["server"])
         session, all_tools = await stack.enter_async_context(mcp_session(server_script))
@@ -535,7 +597,7 @@ async def _sweep(
             print(
                 f"    WOS={metrics['wos']}%  "
                 f"correct={totals['correct_result']}/{totals['total_tests']}  "
-                f"({elapsed:.1f}s)\n"
+                f"({elapsed:.1f}s)"
             )
 
             step_records.append({
@@ -550,59 +612,11 @@ async def _sweep(
                 "totals": totals,
                 "details": details,
             })
+            _checkpoint()
+            print(f"    checkpoint -> {save_path.name}\n")
 
-    wos_curve = [
-        {
-            "step": rec["step"],
-            "tools_added": rec["tools_added"],
-            "exposed_count": rec["exposed_count"],
-            "pool_size": rec["pool_size"],
-            "wos": rec["metrics"]["wos"],
-            "correct": rec["totals"]["correct_result"],
-            "wrong_tool": rec["totals"]["wrong_tool"],
-            "wrong_params": rec["totals"]["wrong_params"],
-            "no_tool_call": rec["totals"]["no_tool_call"],
-        }
-        for rec in step_records
-    ]
-
-    tasks_by_tool_ids = {
-        f"{ds}:{tool}": [t.get("id", "?") for t in tlist]
-        for (ds, tool), tlist in by_tool.items()
-    }
-
-    output = {
-        "model": model_cfg.name,
-        "backend": model_cfg.backend,
-        "base_url": model_cfg.base_url,
-        "seed": seed,
-        "datasets": cycle,
-        "tasks_per_tool": tasks_per_tool,
-        "from_step": from_step,
-        "to_step": to_step,
-        "tool_order_per_dataset": {
-            ds: [t for bundle in schedule for d, t in bundle if d == ds]
-            for ds in cycle
-        },
-        "schedule": [
-            {
-                "step": i + 1,
-                "tools": [{"dataset": d, "tool": t} for d, t in bundle],
-            }
-            for i, bundle in enumerate(schedule)
-        ],
-        "total_steps": total_steps,
-        "total_tools_scheduled": total_tools_scheduled,
-        "tasks_by_tool": tasks_by_tool_ids,
-        "timestamp": datetime.now().isoformat(),
-        "steps": step_records,
-        "wos_curve": wos_curve,
-    }
-
-    save_path = output_path or _default_output_path(model_cfg.name, seed)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(save_path, "w") as f:
-        json.dump(output, f, indent=2)
+    output = _checkpoint()
+    wos_curve = output["wos_curve"]
     print(f"Results saved -> {save_path}")
 
     print("\n" + "=" * 72)
