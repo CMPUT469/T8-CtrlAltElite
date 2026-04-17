@@ -155,6 +155,84 @@ def _collect_l1_by_tool(
     return by_tool, per_dataset_tools
 
 
+def _collect_mixed_by_level(
+    cycle: list[str],
+    rng: random.Random,
+    levels: list[str],
+    tasks_per_level: int,
+) -> tuple[list[dict], dict[str, list[str]]]:
+    """
+    Load tasks from multiple levels per dataset with a graceful floor.
+
+    For every (dataset, level) bin, sample min(tasks_per_level, bin_size)
+    tasks with the seeded RNG. Each sampled task is tagged with `_dataset`.
+
+    Per-dataset tool lists are the union of tools referenced by any sampled
+    task in that dataset — this drives the bundled schedule.
+
+    Returns:
+        tasks : flat list of all sampled tasks across datasets/levels
+        per_dataset_tools : {dataset: sorted list of tool names}
+    """
+    all_tasks: list[dict] = []
+    per_dataset_tools: dict[str, list[str]] = {}
+
+    for ds in cycle:
+        ds_tool_set: set[str] = set()
+        for level in levels:
+            if level == "L1":
+                raw = _load_dataset_l1_tasks(ds)
+            else:
+                raw = load_tasks(ds, [level], limit=None)
+            if not raw:
+                continue
+            for t in raw:
+                for tool in _task_required_tools(t):
+                    ds_tool_set.add(tool)
+            if len(raw) > tasks_per_level:
+                sampled = rng.sample(raw, tasks_per_level)
+            else:
+                sampled = list(raw)
+            for t in sampled:
+                t["_dataset"] = ds
+                t.setdefault("level", level)
+            all_tasks.extend(sampled)
+        per_dataset_tools[ds] = sorted(ds_tool_set)
+
+    return all_tasks, per_dataset_tools
+
+
+def _assign_gate_steps(
+    tasks: list[dict],
+    schedule: list[list[tuple[str, str]]],
+) -> dict[int, list[dict]]:
+    """
+    Map each task to the step at which it becomes eligible for evaluation.
+
+    Gate step = max step index among the task's required tools. Tasks whose
+    required tools are all in the schedule enter the pool on that step and
+    remain forever after. Tasks referencing a tool not in the schedule are
+    dropped (shouldn't happen, but defensive).
+    """
+    tool_to_step: dict[str, int] = {}
+    for i, bundle in enumerate(schedule, start=1):
+        for _ds, tool in bundle:
+            tool_to_step[tool] = i
+
+    by_step: dict[int, list[dict]] = {}
+    for t in tasks:
+        req = _task_required_tools(t)
+        if not req:
+            continue
+        steps = [tool_to_step.get(tool) for tool in req]
+        if any(s is None for s in steps):
+            continue
+        gate = max(steps)
+        t["_gate_step"] = gate
+        by_step.setdefault(gate, []).append(t)
+    return by_step
+
+
 def _build_bundled_schedule(
     per_dataset_tools: dict[str, list[str]],
     rng: random.Random,
@@ -459,6 +537,8 @@ async def _sweep(
     output_path: Optional[Path],
     datasets: list[str],
     tasks_per_tool: int,
+    levels: list[str],
+    tasks_per_level: int,
 ) -> dict:
     if seed is None:
         seed = random.randrange(2**31)
@@ -468,19 +548,41 @@ async def _sweep(
     if not cycle:
         raise SystemExit(f"No valid datasets selected. Pick from {DATASET_CYCLE}.")
 
-    by_tool, per_dataset_tools = _collect_l1_by_tool(cycle, rng, tasks_per_tool)
+    mixed_mode = len(levels) > 1 or (len(levels) == 1 and levels[0] != "L1")
 
-    for ds in cycle:
-        ds_tools = per_dataset_tools[ds]
-        ds_task_count = sum(
-            len(by_tool.get((ds, tool), [])) for tool in ds_tools
+    if mixed_mode:
+        mixed_tasks, per_dataset_tools = _collect_mixed_by_level(
+            cycle, rng, levels, tasks_per_level,
         )
-        print(
-            f"  {ds:10s} {len(ds_tools):2d} tools / {ds_task_count:3d} sampled L1 tasks "
-            f"({tasks_per_tool}/tool)"
-        )
+        by_tool: dict[tuple[str, str], list[dict]] = {}
+        for ds in cycle:
+            ds_tasks = [t for t in mixed_tasks if t.get("_dataset") == ds]
+            lvl_counts = {
+                lvl: sum(1 for t in ds_tasks if t.get("level") == lvl)
+                for lvl in levels
+            }
+            lvl_str = " ".join(f"{k}={v}" for k, v in lvl_counts.items())
+            print(
+                f"  {ds:10s} {len(per_dataset_tools[ds]):2d} tools / "
+                f"{len(ds_tasks):3d} sampled tasks  [{lvl_str}]"
+            )
+    else:
+        by_tool, per_dataset_tools = _collect_l1_by_tool(cycle, rng, tasks_per_tool)
+        mixed_tasks = []
+        for ds in cycle:
+            ds_tools = per_dataset_tools[ds]
+            ds_task_count = sum(
+                len(by_tool.get((ds, tool), [])) for tool in ds_tools
+            )
+            print(
+                f"  {ds:10s} {len(ds_tools):2d} tools / {ds_task_count:3d} sampled L1 tasks "
+                f"({tasks_per_tool}/tool)"
+            )
 
     schedule = _build_bundled_schedule(per_dataset_tools, rng, cycle)
+    tasks_by_gate_step: dict[int, list[dict]] = (
+        _assign_gate_steps(mixed_tasks, schedule) if mixed_mode else {}
+    )
     total_steps = len(schedule)
     total_tools_scheduled = sum(len(bundle) for bundle in schedule)
 
@@ -500,10 +602,21 @@ async def _sweep(
     pool: list[dict] = []
     step_records: list[dict] = []
 
-    tasks_by_tool_ids = {
-        f"{ds}:{tool}": [t.get("id", "?") for t in tlist]
-        for (ds, tool), tlist in by_tool.items()
-    }
+    if mixed_mode:
+        tasks_by_tool_ids = {
+            f"step_{step}": [t.get("id", "?") for t in tlist]
+            for step, tlist in sorted(tasks_by_gate_step.items())
+        }
+        level_counts = {
+            lvl: sum(1 for t in mixed_tasks if t.get("level") == lvl)
+            for lvl in levels
+        }
+    else:
+        tasks_by_tool_ids = {
+            f"{ds}:{tool}": [t.get("id", "?") for t in tlist]
+            for (ds, tool), tlist in by_tool.items()
+        }
+        level_counts = {"L1": sum(len(v) for v in by_tool.values())}
 
     save_path = output_path or _default_output_path(model_cfg.name, seed)
     save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -516,6 +629,7 @@ async def _sweep(
                 "tools_added": rec["tools_added"],
                 "exposed_count": rec["exposed_count"],
                 "pool_size": rec["pool_size"],
+                "level_breakdown": rec.get("level_breakdown"),
                 "wos": rec["metrics"]["wos"],
                 "correct": rec["totals"]["correct_result"],
                 "wrong_tool": rec["totals"]["wrong_tool"],
@@ -530,7 +644,11 @@ async def _sweep(
             "base_url": model_cfg.base_url,
             "seed": seed,
             "datasets": cycle,
-            "tasks_per_tool": tasks_per_tool,
+            "levels": levels,
+            "mixed_mode": mixed_mode,
+            "tasks_per_tool": tasks_per_tool if not mixed_mode else None,
+            "tasks_per_level": tasks_per_level if mixed_mode else None,
+            "level_counts": level_counts,
             "from_step": from_step,
             "to_step": to_step,
             "tool_order_per_dataset": {
@@ -570,7 +688,10 @@ async def _sweep(
         for step_num, bundle in enumerate(schedule, start=1):
             for ds, new_tool in bundle:
                 exposed.add(new_tool)
-                pool.extend(by_tool.get((ds, new_tool), []))
+                if not mixed_mode:
+                    pool.extend(by_tool.get((ds, new_tool), []))
+            if mixed_mode:
+                pool.extend(tasks_by_gate_step.get(step_num, []))
 
             if from_step and step_num < from_step:
                 continue
@@ -600,6 +721,14 @@ async def _sweep(
                 f"({elapsed:.1f}s)"
             )
 
+            if mixed_mode:
+                level_breakdown = {
+                    lvl: sum(1 for t in pool if t.get("level") == lvl)
+                    for lvl in levels
+                }
+            else:
+                level_breakdown = None
+
             step_records.append({
                 "step": step_num,
                 "tools_added": [
@@ -608,6 +737,7 @@ async def _sweep(
                 "exposed_tools": sorted(exposed),
                 "exposed_count": len(exposed),
                 "pool_size": len(pool),
+                "level_breakdown": level_breakdown,
                 "metrics": metrics,
                 "totals": totals,
                 "details": details,
@@ -666,7 +796,17 @@ def _build_parser() -> argparse.ArgumentParser:
                    choices=DATASET_CYCLE,
                    help=f"Datasets to include (default: {DATASET_CYCLE})")
     p.add_argument("--tasks-per-tool", type=int, default=5,
-                   help="How many L1 tasks to sample per tool (default: 5)")
+                   help="How many L1 tasks to sample per tool (default: 5). "
+                        "Used only when --levels is L1 alone.")
+    p.add_argument("--levels", nargs="+", default=["L1"],
+                   choices=["L1", "L2", "L3"],
+                   help="Task levels to include (default: L1 only). "
+                        "Any selection other than exactly L1 switches to "
+                        "mixed-level mode, which uses --tasks-per-level.")
+    p.add_argument("--tasks-per-level", type=int, default=20,
+                   help="Tasks sampled per (dataset, level) bin with a "
+                        "graceful floor (min(N, bin_size)). Default 20. "
+                        "Only used in mixed-level mode.")
     p.add_argument("--allow-fallback", action="store_true")
     p.add_argument("--output", type=Path, default=None)
     return p
@@ -681,12 +821,18 @@ def main():
         api_key=args.api_key,
     )
 
+    mixed_mode_flag = not (len(args.levels) == 1 and args.levels[0] == "L1")
+
     print("=" * 62)
     print(f"  global growing-menu threshold sweep")
     print(f"  model         : {model_cfg.name}  [{model_cfg.backend}]")
     print(f"  endpoint      : {model_cfg.base_url}")
     print(f"  datasets      : {args.datasets}")
-    print(f"  tasks/tool    : {args.tasks_per_tool}")
+    print(f"  levels        : {args.levels}")
+    if mixed_mode_flag:
+        print(f"  tasks/level   : {args.tasks_per_level}  (mixed-mode)")
+    else:
+        print(f"  tasks/tool    : {args.tasks_per_tool}")
     print(f"  seed          : {args.seed if args.seed is not None else '(random)'}")
     if args.from_step or args.to_step:
         print(f"  steps         : {args.from_step or 1}..{args.to_step or 'end'}")
@@ -701,6 +847,8 @@ def main():
         output_path=args.output,
         datasets=args.datasets,
         tasks_per_tool=args.tasks_per_tool,
+        levels=args.levels,
+        tasks_per_level=args.tasks_per_level,
     ))
 
     if not output:
